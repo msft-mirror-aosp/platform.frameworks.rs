@@ -14,9 +14,12 @@
  * limitations under the License.
  */
 
-#include "shared.rsh"
+#pragma version(1)
+#pragma rs java_package_name(unused)
+#pragma rs_fp_relaxed
 
-int4 RS_KERNEL increment(int4 in)
-{
-    return in + 1;
+uint32_t RS_KERNEL multiply(uint32_t in) {
+    return in * 2;
 }
+
+
