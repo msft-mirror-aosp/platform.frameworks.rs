@@ -37,17 +37,20 @@ LOCAL_SHARED_LIBRARIES := \
     libbcinfo \
     libc++ \
     liblog \
-    libvulkan
+    libspirit \
+    libvulkan \
+    libgui
 
 LOCAL_C_INCLUDES := \
     frameworks/compile/libbcc/include \
     frameworks/native/vulkan/include \
     frameworks/rs \
     frameworks/rs/cpu_ref \
+    frameworks/rs/rsov/compiler \
 
 LOCAL_C_INCLUDES += \
 
-LOCAL_CFLAGS := -Werror -Wall -Wextra -fno-exceptions
+LOCAL_CFLAGS := -Werror -Wall -Wextra
 # TODO: remove warnings on unused variables and parameters
 LOCAL_CFLAGS += -Wno-unused-variable -Wno-unused-parameter
 

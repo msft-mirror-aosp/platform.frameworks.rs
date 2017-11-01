@@ -19,11 +19,11 @@
 
 namespace llvm {
 class ModulePass;
-}
+} // namespace llvm
 
 namespace rs2spirv {
 
-llvm::ModulePass *createGlobalMergePass();
+llvm::ModulePass *createGlobalMergePass(bool CPU = false);
 
 } // namespace rs2spirv
 

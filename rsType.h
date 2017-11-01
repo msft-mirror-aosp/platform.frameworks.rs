@@ -19,6 +19,8 @@
 
 #include "rsElement.h"
 
+#include <vector>
+
 // ---------------------------------------------------------------------------
 namespace android {
 namespace renderscript {
@@ -161,10 +163,10 @@ public:
     ~TypeState();
 
     // Cache of all existing types.
-    Vector<Type *> mTypes;
+    std::vector<Type *> mTypes;
 };
 
 
-}
-}
+} // namespace renderscript
+} // namespace android
 #endif //ANDROID_STRUCTURED_TYPE

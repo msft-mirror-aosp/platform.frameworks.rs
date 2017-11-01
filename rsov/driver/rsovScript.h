@@ -19,6 +19,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <map>
 #include <vector>
 
 #include "bcinfo/MetadataExtractor.h"
@@ -38,17 +39,24 @@ class ScriptC;
 namespace rsov {
 
 class RSoVAllocation;
+class RSoVBuffer;
 class RSoVContext;
 
 // TODO: CpuScript is a bad name for the base class. Fix with a refactoring.
 class RSoVScript : RsdCpuReference::CpuScript {
  public:
   RSoVScript(RSoVContext *context, std::vector<uint32_t> &&spvWords,
-             bcinfo::MetadataExtractor *ME);
+             bcinfo::MetadataExtractor *ME,
+             std::map<std::string, int> *GAMapping);
   RSoVScript(RSoVContext *context, const std::vector<uint32_t> &spvWords,
-             bcinfo::MetadataExtractor *ME) = delete;
+             bcinfo::MetadataExtractor *ME,
+             std::map<std::string, int> *GAMapping) = delete;
 
   virtual ~RSoVScript();
+
+  static bool isScriptCpuBacked(const Script *s);
+  static void initScriptOnCpu(Script *s, RsdCpuReference::CpuScript *cs);
+  static void initScriptOnRSoV(Script *s, RSoVScript *rsovScript);
 
   void populateScript(Script *) override;
   void invokeFunction(uint32_t slot, const void *params,
@@ -95,15 +103,26 @@ class RSoVScript : RsdCpuReference::CpuScript {
   RsdCpuReference::CpuScript *getCpuScript() const { return mCpuScript; }
 
  private:
-  void InitDescriptorAndPipelineLayouts();
+  void InitDescriptorAndPipelineLayouts(uint32_t inLen);
   void InitShader(uint32_t slot);
-  void InitDescriptorPool();
-  void InitDescriptorSet(const RSoVAllocation *inputAllocation,
+  void InitDescriptorPool(uint32_t inLen);
+  void InitDescriptorSet(const std::vector<RSoVAllocation *> &inputAllocations,
                          RSoVAllocation *outputAllocation);
   void InitPipelineCache();
   void InitPipeline();
-  void runForEach(uint32_t slot, const RSoVAllocation *input,
+  void MarshalTypeInfo();
+  void runForEach(uint32_t slot, uint32_t inLen,
+                  const std::vector<RSoVAllocation *> &input,
                   RSoVAllocation *output);
+
+  // Gets the offset for the global variable with the given slot number in
+  // the global buffer
+  uint32_t GetExportedVarOffset(uint32_t slot) const {
+    // High-level Java or C++ API has verified that slot is in range
+    return mExportedVarOffsets[slot];
+  }
+
+  static constexpr int CPU_SCRIPT_MAGIC_NUMBER = 0x60000;
 
   RSoVContext *mRSoV;
   VkDevice mDevice;
@@ -120,6 +139,12 @@ class RSoVScript : RsdCpuReference::CpuScript {
   std::vector<VkDescriptorSet> mDescSet;
   // For kernel names
   const bcinfo::MetadataExtractor *mME;
+  std::unique_ptr<RSoVBuffer> mGlobals;
+  std::vector<uint32_t> mExportedVarOffsets;
+  // Metadata of global allocations
+  std::unique_ptr<RSoVBuffer> mGlobalAllocationMetadata;
+  // Mapping of global allocation to rsov-assigned ID
+  std::unique_ptr<std::map<std::string, int> > mGAMapping;
 };
 
 }  // namespace rsov

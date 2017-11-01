@@ -16,17 +16,19 @@
 
 #define LOG_TAG "libRS_jni"
 
-#include <stdlib.h>
-#include <stdio.h>
+#include <dlfcn.h>
 #include <fcntl.h>
-#include <unistd.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
 #include <android/bitmap.h>
 #include <android/log.h>
 
 #include <rsEnv.h>
 #include "rsDispatch.h"
-#include <dlfcn.h>
 
 //#define LOG_API ALOG
 #define LOG_API(...)
@@ -989,7 +991,7 @@ nElementGetSubElements(JNIEnv *_env, jobject _this, jlong con, jlong id,
 
     uintptr_t *ids = (uintptr_t *)malloc(dataSize * sizeof(uintptr_t));
     const char **names = (const char **)malloc((uint32_t)dataSize * sizeof(const char *));
-    uint32_t *arraySizes = (uint32_t *)malloc((uint32_t)dataSize * sizeof(uint32_t));
+    size_t *arraySizes = (size_t *)malloc(dataSize * sizeof(size_t));
 
     dispatchTab.ElementGetSubElements((RsContext)con, (RsElement)id, ids, names, arraySizes,
                                       (uint32_t)dataSize);
@@ -1728,9 +1730,9 @@ nScriptForEachMulti(JNIEnv *_env, jobject _this, jlong con, jlong script, jint s
         sca = &sc;
     }
 
-    dispatchTabInc.ScriptForEachMulti((RsContext)con, (RsScript)script, slot,
-                                      in_allocs, in_len, (RsAllocation)aout,
-                                      param_ptr, param_len, sca, sc_size);
+    dispatchTab.ScriptForEachMulti((RsContext)con, (RsScript)script, slot,
+                                   in_allocs, in_len, (RsAllocation)aout,
+                                   param_ptr, param_len, sca, sc_size);
 
 exit:
 

@@ -34,8 +34,8 @@ protected:
                        uint32_t xend, uint32_t outstep);
 };
 
-}
-}
+} // namespace renderscript
+} // namespace android
 
 
 enum {
@@ -119,9 +119,7 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
     uint32_t x2 = xend;
 
 #if defined(ARCH_ARM_USE_INTRINSICS)
-    // Bug: 22047392 - Skip optimized version for BLEND_DST_ATOP until this
-    // been fixed.
-    if (gArchUseSIMD && info->slot != BLEND_DST_ATOP) {
+    if (gArchUseSIMD) {
         if (rsdIntrinsicBlend_K(out, in, info->slot, x1, x2) >= 0)
             return;
     }

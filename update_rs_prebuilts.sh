@@ -28,8 +28,7 @@ else
 
 fi
 
-# Turn off the build cache and make sure we build all of LLVM from scratch.
-export ANDROID_USE_BUILDCACHE=false
+# Make sure we build all of LLVM from scratch.
 export FORCE_BUILD_LLVM_COMPONENTS=true
 
 # Skip building LLVM and compiler-rt tests while updating prebuilts
@@ -80,7 +79,7 @@ build_rstest_compatlib() {
   echo Building for target $1
   lunch $1
   # Build a sample support application to ensure that all the pieces are up to date.
-  cd $MY_ANDROID_DIR/frameworks/rs/java/tests/RSTest_CompatLib/ && mma -j$NUM_CORES FORCE_BUILD_RS_COMPAT=true && cd - || exit 6
+  cd $MY_ANDROID_DIR/frameworks/rs/tests/java_api/RSTest_CompatLib/ && mma -j$NUM_CORES FORCE_BUILD_RS_COMPAT=true && cd - || exit 6
 }
 
 build_rs_host_tools() {
@@ -188,12 +187,13 @@ if [ $DARWIN -eq 0 ]; then
         sys_lib_dir=$MY_ANDROID_DIR/out/target/product/$sys_name/system/lib
         ;;
     esac
-    obj_lib_dir=$MY_ANDROID_DIR/out/target/product/$sys_name/obj/lib
+    obj_lib_dir=$MY_ANDROID_DIR/out/target/product/$sys_name/obj/SHARED_LIBRARIES
     obj_static_lib_dir=$MY_ANDROID_DIR/out/target/product/$sys_name/obj/STATIC_LIBRARIES
 
     for a in `find renderscript/lib/$t -name \*.so`; do
       file=`basename $a`
-      cp `find $sys_lib_dir $obj_lib_dir -name $file | head -1` $a || exit 4
+      name="${file%.*}"
+      cp $obj_lib_dir/${name}_intermediates/$file $a || exit 4
     done
 
     for a in `find renderscript/lib/$t -name \*.bc`; do
@@ -203,7 +203,8 @@ if [ $DARWIN -eq 0 ]; then
 
     for a in `find renderscript/lib/$t -name \*.a`; do
       file=`basename $a`
-      cp `find $obj_static_lib_dir -name $file | head -1` $a || exit 4
+      name="${file%.*}"
+      cp $obj_static_lib_dir/${name}_intermediates/$file $a || exit 4
     done
 
   done
