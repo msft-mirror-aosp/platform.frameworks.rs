@@ -19,16 +19,11 @@
 
 namespace llvm {
 class ModulePass;
-}
-
-namespace bcinfo {
-class MetadataExtractor;
-}
+} // namespace llvm
 
 namespace rs2spirv {
 
-llvm::ModulePass *
-createInlinePreparationPass(bcinfo::MetadataExtractor &Extractor);
+llvm::ModulePass *createInlinePreparationPass();
 
 } // namespace rs2spirv
 

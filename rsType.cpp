@@ -16,11 +16,9 @@
 
 #include "rsContext.h"
 
-#if !defined(RS_SERVER) && !defined(RS_COMPATIBILITY_LIB)
+#ifndef RS_COMPATIBILITY_LIB
 #include "system/graphics.h"
-#endif
-
-#ifdef RS_COMPATIBILITY_LIB
+#else
 #include "rsCompatibilityLib.h"
 #endif
 
@@ -33,9 +31,10 @@ Type::Type(Context *rsc) : ObjectBase(rsc) {
 }
 
 void Type::preDestroy() const {
-    for (uint32_t ct = 0; ct < mRSC->mStateType.mTypes.size(); ct++) {
-        if (mRSC->mStateType.mTypes[ct] == this) {
-            mRSC->mStateType.mTypes.removeAt(ct);
+    auto& types = mRSC->mStateType.mTypes;
+    for (uint32_t ct = 0; ct < types.size(); ct++) {
+        if (types[ct] == this) {
+            types.erase(types.begin() + ct);
             break;
         }
     }
@@ -118,10 +117,12 @@ void Type::compute() {
     if (mHal.state.faces) {
         mCellCount *= 6;
     }
-#ifndef RS_SERVER
     // YUV only supports basic 2d
     // so we can stash the plane pointers in the mipmap levels.
     if (mHal.state.dimYuv) {
+        mHal.state.lodDimX[0] = tx;
+        mHal.state.lodDimY[0] = ty;
+        mHal.state.lodDimZ[0] = tz;
         mHal.state.lodDimX[1] = mHal.state.lodDimX[0] / 2;
         mHal.state.lodDimY[1] = mHal.state.lodDimY[0] / 2;
         mHal.state.lodDimX[2] = mHal.state.lodDimX[0] / 2;
@@ -144,7 +145,6 @@ void Type::compute() {
             rsAssert(0);
         }
     }
-#endif
     mHal.state.element = mElement.get();
 }
 
@@ -287,7 +287,7 @@ ObjectBaseRef<Type> Type::getTypeRef(Context *rsc, const Element *e,
     nt->compute();
 
     ObjectBase::asyncLock();
-    stc->mTypes.push(nt);
+    stc->mTypes.push_back(nt);
     ObjectBase::asyncUnlock();
 
     return returnRef;

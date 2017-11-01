@@ -77,7 +77,7 @@ void FileA3D::parseHeader(IStream *headerStream) {
             entry->mLength = headerStream->loadU32();
         }
         entry->mRsObj = nullptr;
-        mIndex.push(entry);
+        mIndex.push_back(entry);
     }
 }
 
@@ -164,6 +164,7 @@ bool FileA3D::load(FILE *f) {
 
     len = fread(headerData, 1, headerSize, f);
     if (len != headerSize) {
+        free(headerData);
         return false;
     }
 
@@ -370,7 +371,7 @@ void FileA3D::appendToFile(Context *con, ObjectBase *obj) {
     indexEntry->mType = obj->getClassId();
     indexEntry->mOffset = mWriteStream->getPos();
     indexEntry->mRsObj = obj;
-    mWriteIndex.push(indexEntry);
+    mWriteIndex.push_back(indexEntry);
     obj->serialize(con, mWriteStream);
     indexEntry->mLength = mWriteStream->getPos() - indexEntry->mOffset;
     mWriteStream->align(4);

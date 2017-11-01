@@ -25,9 +25,8 @@
 #else
     #include "rsCppUtils.h"
 
-    #include <bcc/Config/Config.h>
+    #include <bcc/Config.h>
     #include <bcinfo/MetadataExtractor.h>
-    #include <cutils/properties.h>
 
     #include <zlib.h>
     #include <sys/file.h>
@@ -57,28 +56,6 @@ static bool allocationLODIsNull(const android::renderscript::Allocation *alloc) 
 }
 
 #ifndef RS_COMPATIBILITY_LIB
-
-static bool is_force_recompile() {
-#ifdef RS_SERVER
-  return false;
-#else
-  char buf[PROPERTY_VALUE_MAX];
-
-  // Re-compile if floating point precision has been overridden.
-  property_get("debug.rs.precision", buf, "");
-  if (buf[0] != '\0') {
-    return true;
-  }
-
-  // Re-compile if debug.rs.forcerecompile is set.
-  property_get("debug.rs.forcerecompile", buf, "0");
-  if ((::strcmp(buf, "1") == 0) || (::strcmp(buf, "true") == 0)) {
-    return true;
-  } else {
-    return false;
-  }
-#endif  // RS_SERVER
-}
 
 static void setCompileArguments(std::vector<const char*>* args,
                                 const std::string& bcFileName,
@@ -131,7 +108,13 @@ static void setCompileArguments(std::vector<const char*>* args,
         // Only load additional libraries for compiles that don't use
         // the debug context.
         if (bccPluginName && strlen(bccPluginName) > 0) {
+#ifdef __ANDROID__
+            // For Android, -plugin option must be used in order to load the
+            // vendor plugin from the sphal namespace.
+            args->push_back("-plugin");
+#else
             args->push_back("-load");
+#endif
             args->push_back(bccPluginName);
         }
     }
@@ -179,10 +162,11 @@ static bool compileBitcode(const std::string &bcFileName,
 // reinstalled, which would already clear the code_cache/ directory.
 bool isChecksumNeeded(const char *cacheDir) {
     if ((::strcmp(SYSLIBPATH, cacheDir) == 0) ||
+        (::strcmp(SYSLIBPATH_VNDK, cacheDir) == 0) ||
         (::strcmp(SYSLIBPATH_VENDOR, cacheDir) == 0))
         return false;
-    char buf[PROPERTY_VALUE_MAX];
-    property_get("ro.debuggable", buf, "");
+    char buf[PROP_VALUE_MAX];
+    android::renderscript::property_get("ro.debuggable", buf, "");
     return (buf[0] == '1');
 }
 
@@ -386,7 +370,8 @@ bool RsdCpuScriptImpl::init(char const *resName, char const *cacheDir,
     compileArguments.push_back(checksumStr.c_str());
     compileArguments.push_back(nullptr);
 
-    if (!is_force_recompile() && !useRSDebugContext) {
+    const bool reuse = !is_force_recompile() && !useRSDebugContext;
+    if (reuse) {
         mScriptSO = SharedLibraryUtils::loadSharedLibrary(cacheDir, resName);
 
         // Read RS info from the shared object to detect checksum mismatch
@@ -396,8 +381,8 @@ bool RsdCpuScriptImpl::init(char const *resName, char const *cacheDir,
         }
     }
 
-    // If we can't, it's either not there or out of date.  We compile the bit code and try loading
-    // again.
+    // If reuse is desired and we can't, it's either not there or out of date.
+    // We compile the bit code and try loading again.
     if (mScriptSO == nullptr) {
         if (!compileBitcode(bcFileName, (const char*)bitcode, bitcodeSize,
                             compileArguments))
@@ -407,14 +392,21 @@ bool RsdCpuScriptImpl::init(char const *resName, char const *cacheDir,
             return false;
         }
 
-        if (!SharedLibraryUtils::createSharedLibrary(mCtx->getContext()->getDriverName(),
-                                                     cacheDir, resName)) {
+        std::string SOPath;
+
+        if (!SharedLibraryUtils::createSharedLibrary(
+                mCtx->getContext()->getDriverName(), cacheDir, resName, reuse,
+                &SOPath)) {
             ALOGE("Linker: Failed to link object file '%s'", resName);
             mCtx->unlockMutex();
             return false;
         }
 
-        mScriptSO = SharedLibraryUtils::loadSharedLibrary(cacheDir, resName);
+        if (reuse) {
+            mScriptSO = SharedLibraryUtils::loadSharedLibrary(cacheDir, resName);
+        } else {
+            mScriptSO = SharedLibraryUtils::loadAndDeleteSharedLibrary(SOPath.c_str());
+        }
         if (mScriptSO == nullptr) {
             ALOGE("Unable to load '%s'", resName);
             mCtx->unlockMutex();
@@ -427,7 +419,7 @@ bool RsdCpuScriptImpl::init(char const *resName, char const *cacheDir,
         }
     }
 
-    mBitcodeFilePath.setTo(bcFileName.c_str());
+    mBitcodeFilePath.assign(bcFileName.c_str());
 
 #else  // RS_COMPATIBILITY_LIB is defined
     const char *nativeLibDir = mCtx->getContext()->getNativeLibDir();
@@ -462,6 +454,9 @@ const char* RsdCpuScriptImpl::findCoreLib(const bcinfo::MetadataExtractor& ME, c
 
     // If we're debugging, use the debug library.
     if (mCtx->getContext()->getContextType() == RS_CONTEXT_TYPE_DEBUG) {
+        if (ME.hasDebugInfo()) {
+            return SYSLIBPATH_BC"/libclcore_debug_g.bc";
+        }
         return SYSLIBPATH_BC"/libclcore_debug.bc";
     }
 
@@ -656,7 +651,13 @@ bool RsdCpuScriptImpl::forEachMtlsSetup(const Allocation ** ains,
         return false;
     }
 
-    if (inLen > 0) {
+    // The only situation where ains[j] is null is when inLen==1 and j==0;
+    // and that can only happen for an old-style kernel in API level 11~13,
+    // where the input allocation cannot be skipped if the output allocation is specified.
+    if (inLen != 0)
+        rsAssert((inLen == 1) || (ains[0] != nullptr));
+
+    if (inLen > 0 && ains[0]) {
         const Allocation *ain0   = ains[0];
         const Type       *inType = ain0->getType();
 
@@ -667,7 +668,7 @@ bool RsdCpuScriptImpl::forEachMtlsSetup(const Allocation ** ains,
         for (int Index = inLen; --Index >= 1;) {
             if (!ain0->hasSameDims(ains[Index])) {
                 mCtx->getContext()->setError(RS_ERROR_BAD_SCRIPT,
-                  "Failed to launch kernel; dimensions of input"
+                  "Failed to launch kernel; dimensions of input "
                   "allocations do not match.");
                 return false;
             }
@@ -690,7 +691,7 @@ bool RsdCpuScriptImpl::forEachMtlsSetup(const Allocation ** ains,
     }
 
     if (inLen > 0 && aout != nullptr) {
-        if (!ains[0]->hasSameDims(aout)) {
+        if (ains[0] && !ains[0]->hasSameDims(aout)) {
             mCtx->getContext()->setError(RS_ERROR_BAD_SCRIPT,
               "Failed to launch kernel; dimensions of input and output allocations do not match.");
 
@@ -720,6 +721,12 @@ bool RsdCpuScriptImpl::forEachMtlsSetup(const Allocation ** ains,
     if (inLen > 0) {
         mtls->fep.inLen = inLen;
         for (int index = inLen; --index >= 0;) {
+            if (ains[index] == nullptr) {
+                // In old style kernels, the first and only input allocation could be null.
+                // Not allowed in newer styles.
+                rsAssert(inLen == 1 && index == 0);
+                continue;
+            }
             mtls->fep.inPtr[index] = (const uint8_t*)ains[index]->mHal.drvState.lod[0].mallocPtr;
             mtls->fep.inStride[index] = ains[index]->getType()->getElementSizeBytes();
         }
@@ -997,5 +1004,5 @@ void RsdCpuScriptImpl::postLaunch(uint32_t slot, const Allocation ** ains,
                                   const RsScriptCall *sc) {}
 
 
-}
-}
+} // namespace renderscript
+} // namespace android

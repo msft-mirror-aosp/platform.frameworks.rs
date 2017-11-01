@@ -21,6 +21,7 @@
 
 #include "rsStream.h"
 #include <stdio.h>
+#include <vector>
 
 #define A3D_MAGIC_KEY "Android3D_ff"
 
@@ -87,15 +88,15 @@ protected:
     uint64_t mDataSize;
 
     OStream *mWriteStream;
-    Vector<A3DIndexEntry*> mWriteIndex;
+    std::vector<A3DIndexEntry*> mWriteIndex;
 
     IStream *mReadStream;
-    Vector<A3DIndexEntry*> mIndex;
+    std::vector<A3DIndexEntry*> mIndex;
 };
 
 
-}
-}
+} // namespace renderscript
+} // namespace android
 #endif //ANDROID_RS_FILE_A3D_H
 
 

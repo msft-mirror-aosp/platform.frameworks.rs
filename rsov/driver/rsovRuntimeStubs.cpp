@@ -70,9 +70,7 @@ typedef uint64_t ulong4 __attribute__((ext_vector_type(4)));
 typedef uint8_t uchar;
 typedef uint16_t ushort;
 typedef uint32_t uint;
-#ifndef RS_SERVER
 typedef uint64_t ulong;
-#endif
 
 // Add NOLINT to suppress wrong warnings from clang-tidy.
 #ifndef __LP64__
@@ -81,12 +79,12 @@ typedef uint64_t ulong;
     const int *const p; \
   } __attribute__((packed, aligned(4))) t; /*NOLINT*/
 #else
-#define OPAQUETYPE(t) \
-  typedef struct {    \
-    const void *p;    \
-    const void *r;    \
-    const void *v1;   \
-    const void *v2;   \
+#define OPAQUETYPE(t)     \
+  typedef struct {        \
+    const void *p;        \
+    const void *unused1;  \
+    const void *unused2;  \
+    const void *unused3;  \
   } t; /*NOLINT*/
 #endif
 

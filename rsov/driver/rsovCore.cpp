@@ -37,6 +37,7 @@ namespace android {
 namespace renderscript {
 
 namespace {
+
 void SetPriority(const Context *rsc, int32_t priority) {
   RSoVHal *dc = (RSoVHal *)rsc->mHal.drv;
 
@@ -59,16 +60,30 @@ void FreeRuntimeMem(void* ptr) {
     free(ptr);
 }
 
-const RsdCpuReference::CpuSymbol *rsdLookupRuntimeStub(
+const RsdCpuReference::CpuSymbol *lookupRuntimeStubs(
     Context *pContext, char const *name) {
   return nullptr;
 }
 
-RsdCpuReference::CpuScript *LookupScript(Context *, const Script *s) {
-  return (RsdCpuReference::CpuScript *)s->mHal.drv;
+}  // anonymous namespace
+
+namespace rsov {
+
+namespace {
+
+RsdCpuReference::CpuScript *lookupCpuScript(Context *rsc, const Script *s) {
+  if (RSoVScript::isScriptCpuBacked(s)) {
+    return reinterpret_cast<RsdCpuReference::CpuScript *>(s->mHal.drv);
+  }
+
+  RSoVScript *rsovScript = reinterpret_cast<RSoVScript *>(s->mHal.drv);
+  return rsovScript->getCpuScript();
 }
 
 }  // anonymous namespace
+
+}  // namespace rsov
+
 
 extern "C" bool rsdHalQueryHal(RsHalInitEnums entry, void **fnPtr) {
   switch (entry) {
@@ -293,27 +308,29 @@ extern "C" bool rsdHalInit(RsContext c, uint32_t version_major,
                            uint32_t version_minor) {
   Context *rsc = (Context *)c;
 
-  RSoVHal *hal = new RSoVHal();
+  std::unique_ptr<RSoVHal> hal(new RSoVHal());
   if (!hal) {
     ALOGE("Failed creating RSoV driver hal.");
     return false;
   }
-  rsc->mHal.drv = hal;
 
-  hal->mCpuRef = RsdCpuReference::create(rsc, version_major, version_minor,
-                                         &rsdLookupRuntimeStub, &LookupScript);
-  if (!hal->mCpuRef) {
-    ALOGE("RsdCpuReference::create for driver hal failed.");
-    rsc->mHal.drv = nullptr;
+  std::unique_ptr<rsov::RSoVContext> rsov(rsov::RSoVContext::create());
+  if (!rsov) {
+    ALOGE("RSoVContext::create for driver hal failed.");
     return false;
   }
 
-  hal->mRSoV = android::renderscript::rsov::RSoVContext::create();
-  if (!hal->mRSoV) {
+  std::unique_ptr<RsdCpuReference> cpuref(RsdCpuReference::create(rsc, version_major, version_minor,
+                                                                  &lookupRuntimeStubs,
+                                                                  &rsov::lookupCpuScript));
+  if (!cpuref) {
     ALOGE("RsdCpuReference::create for driver hal failed.");
-    rsc->mHal.drv = nullptr;
     return false;
   }
+
+  hal->mRSoV = rsov.release();
+  hal->mCpuRef = cpuref.release();
+  rsc->mHal.drv = hal.release();
 
   return true;
 }

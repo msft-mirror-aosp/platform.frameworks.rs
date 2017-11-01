@@ -19,14 +19,15 @@
 
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringRef.h"
+
+#include <string>
 
 namespace llvm {
 class CallInst;
 class GlobalVariable;
 class Module;
 class Type;
-}
+} // namespace llvm
 
 namespace rs2spirv {
 
@@ -34,9 +35,16 @@ struct RSAllocationInfo {
   std::string VarName;
   llvm::Optional<std::string> RSElementType;
   llvm::GlobalVariable *GlobalVar;
+  // Assigned unique identifier for this allocation;
+  // not the slot #.
+  // Represents the index of this allocation's metadata
+  // in the global allocation metadata Vulkan buffer
+  int ID;
+  bool hasID(void) const { return ID >= 0; }
+  void assignID(int no) { ID = no; }
 };
 
-enum class RSAllocAccessKind { GEA, SEA };
+enum class RSAllocAccessKind { GEA, SEA, DIMX };
 
 struct RSAllocationCallInfo {
   RSAllocationInfo &RSAlloc;
@@ -46,7 +54,6 @@ struct RSAllocationCallInfo {
 };
 
 bool isRSAllocation(const llvm::GlobalVariable &GV);
-llvm::Optional<llvm::StringRef> getRSTypeName(const llvm::GlobalVariable &GV);
 bool getRSAllocationInfo(llvm::Module &M,
                          llvm::SmallVectorImpl<RSAllocationInfo> &Allocs);
 bool getRSAllocAccesses(llvm::SmallVectorImpl<RSAllocationInfo> &Allocs,

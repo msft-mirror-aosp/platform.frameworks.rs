@@ -15,8 +15,11 @@
  */
 
 #include "RSSPIRVWriter.h"
-#include "unit_tests/TestRunner.h"
+#include "bcinfo/MetadataExtractor.h"
+#include "spirit/file_utils.h"
+
 #include "llvm/Bitcode/ReaderWriter.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/CommandLine.h"
@@ -24,19 +27,19 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/PrettyStackTrace.h"
-#include "llvm/Support/SPIRV.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <fstream>
-#include <iterator>
+#include "Context.h"
+#include "GlobalMergePass.h"
+#include "RSSPIRVWriter.h"
 
 #define DEBUG_TYPE "rs2spirv"
 
 namespace kExt {
 const char SPIRVBinary[] = ".spv";
-}
+} // namespace kExt
 
 using namespace llvm;
 
@@ -47,33 +50,9 @@ static cl::opt<std::string> OutputFile("o",
                                        cl::desc("Override output filename"),
                                        cl::value_desc("filename"));
 
-static cl::opt<std::string>
-    KernelFile("lk", cl::desc("File with a compute shader kernel"),
-               cl::value_desc("kernel.spt"));
-
-static cl::opt<std::string> WrapperFile(
-    "lw",
-    cl::desc("Generated wrapper file"
-             "(with entrypoint function and input/output images or buffers)"),
-    cl::value_desc("wrapper.spt"));
-
-static cl::opt<bool> IsPrintAsWords(
-    "print-as-words",
-    cl::desc("Print an input .spv file as a brace-init-list of words"),
-    cl::init(false));
-
-static cl::opt<bool>
-    IsRegularization("s",
-                     cl::desc("Regularize LLVM to be representable by SPIR-V"));
-
-#ifdef RS2SPIRV_DEBUG
-static cl::opt<bool> RunTests("run-tests", cl::desc("Run unit tests"),
-                              cl::init(false));
-#endif
-
-namespace SPIRV {
-extern bool SPIRVUseTextFormat;
-}
+static cl::opt<std::string> OutputBitcodeFile("bc",
+                                              cl::desc("Override output bitcode filename"),
+                                              cl::value_desc("bitcode filename"));
 
 static std::string removeExt(const std::string &FileName) {
   size_t Pos = FileName.find_last_of(".");
@@ -82,16 +61,18 @@ static std::string removeExt(const std::string &FileName) {
   return FileName;
 }
 
-static int convertLLVMToSPIRV() {
-  if (!KernelFile.empty() && !WrapperFile.empty()) {
-    DEBUG(dbgs() << "Link " << KernelFile << " into " << WrapperFile << "\n");
-    if (!rs2spirv::Link(KernelFile, WrapperFile, OutputFile)) {
-      errs() << "Linking failed!\n\n";
-      return -1;
-    }
-    return 0;
-  }
+static bool WriteBitcode(rs2spirv::Context &Ctxt, Module *M,
+                         raw_ostream &OS, std::string &ErrMsg) {
+  llvm::legacy::PassManager PassMgr;
+  PassMgr.add(rs2spirv::createGlobalMergePass(true));
+  PassMgr.run(*M);
 
+  WriteBitcodeToFile(M, OS);
+
+  return true;
+}
+
+static int convertLLVMToSPIRV() {
   LLVMContext Context;
 
   std::string Err;
@@ -100,7 +81,6 @@ static int convertLLVMToSPIRV() {
     errs() << "Fails to open input file: " << Err;
     return -1;
   }
-
   ErrorOr<std::unique_ptr<Module>> MOrErr =
       getStreamedBitcodeModule(InputFile, std::move(DS), Context);
 
@@ -116,6 +96,28 @@ static int convertLLVMToSPIRV() {
     return -1;
   }
 
+  std::error_code EC;
+
+  std::vector<char> bitcode = android::spirit::readFile<char>(InputFile);
+  std::unique_ptr<bcinfo::MetadataExtractor> ME(
+      new bcinfo::MetadataExtractor(bitcode.data(), bitcode.size()));
+
+  rs2spirv::Context &Ctxt = rs2spirv::Context::getInstance();
+
+  if (!Ctxt.Initialize(std::move(ME))) {
+    return -2;
+  }
+
+  if (!OutputBitcodeFile.empty()) {
+    llvm::StringRef outBCFile(OutputBitcodeFile);
+    llvm::raw_fd_ostream OFS_BC(outBCFile, EC, llvm::sys::fs::F_None);
+    if (!WriteBitcode(Ctxt, M.get(), OFS_BC, Err)) {
+      errs() << "compiler error: " << Err << '\n';
+      return -3;
+    }
+    return 0;
+  }
+
   if (OutputFile.empty()) {
     if (InputFile == "-")
       OutputFile = "-";
@@ -124,48 +126,11 @@ static int convertLLVMToSPIRV() {
   }
 
   llvm::StringRef outFile(OutputFile);
-  std::error_code EC;
   llvm::raw_fd_ostream OFS(outFile, EC, llvm::sys::fs::F_None);
-  if (!rs2spirv::WriteSPIRV(M.get(), OFS, Err)) {
-    errs() << "Fails to save LLVM as SPIRV: " << Err << '\n';
-    return -1;
-  }
 
-  return 0;
-}
-
-static int printAsWords() {
-  std::ifstream IFS(InputFile, std::ios::binary);
-  if (!IFS.good()) {
-    errs() << "Could not open input file\n";
-    return -1;
-  }
-
-  uint64_t FSize;
-  const auto EC = llvm::sys::fs::file_size(InputFile, FSize);
-  if (EC) {
-    errs() << "Fails to open input file: " << EC.message() << '\n';
-    return -1;
-  }
-
-  if (FSize % 4 != 0) {
-    errs() << "Input file is not a stream of words. Size mismatch.\n";
-    return -1;
-  }
-
-  std::istreambuf_iterator<char> It(IFS);
-  const std::istreambuf_iterator<char> End;
-
-  outs() << '{';
-
-  while (It != End) {
-    uint32_t val = 0;
-    // Mask the sign-extended values to prevent higher bits pollution.
-    val += uint32_t(*(It++)) & 0x000000FF;
-    val += (uint32_t(*(It++)) << 8) & 0x0000FF00;
-    val += (uint32_t(*(It++)) << 16) & 0x00FF0000;
-    val += (uint32_t(*(It++)) << 24) & 0xFF000000;
-    outs() << val << (It != End ? ", " : "};\n");
+  if (!rs2spirv::WriteSPIRV(Ctxt, M.get(), OFS, Err)) {
+    errs() << "compiler error: " << Err << '\n';
+    return -4;
   }
 
   return 0;
@@ -177,14 +142,6 @@ int main(int ac, char **av) {
   PrettyStackTraceProgram X(ac, av);
 
   cl::ParseCommandLineOptions(ac, av, "RenderScript to SPIRV translator");
-
-#ifdef RS2SPIRV_DEBUG
-  if (RunTests)
-    return rs2spirv::TestRunnerContext::runTests();
-#endif
-
-  if (IsPrintAsWords)
-    return printAsWords();
 
   return convertLLVMToSPIRV();
 }

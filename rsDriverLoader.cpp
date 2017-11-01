@@ -21,9 +21,8 @@
 
 #include "rsgApiStructs.h"
 
-#ifndef RS_COMPATIBILITY_LIB
+#if !defined(RS_VENDOR_LIB) && !defined(RS_COMPATIBILITY_LIB)
 #include "rsMesh.h"
-#include <gui/DisplayEventReceiver.h>
 #endif
 
 #include <sys/types.h>
@@ -35,11 +34,6 @@
 #include <dlfcn.h>
 #include <inttypes.h>
 #include <unistd.h>
-
-#if !defined(RS_SERVER) && !defined(RS_COMPATIBILITY_LIB) && \
-        defined(__ANDROID__)
-#include <cutils/properties.h>
-#endif
 
 #ifdef RS_COMPATIBILITY_LIB
 #include "rsCompatibilityLib.h"
@@ -237,31 +231,23 @@ bool Context::loadDriver(bool forceDefault, bool forceRSoV) {
 #ifndef RS_COMPATIBILITY_LIB
 
     if (forceRSoV) {
-        // If the debug property is set to use the RSoV driver, load it and fail
-        // if it does not load.
+        // If the property is set to use the RSoV driver, load it and fall back
+        // to the vendor driver or the CPU reference driver if it does not load.
         if (loadRuntime("libRSDriver_RSoV.so")) {
             ALOGV("Successfully loaded the RSoV driver!");
             return true;
         }
         ALOGE("Failed to load the RSoV driver!");
-        return false;
     }
 
-#ifdef OVERRIDE_RS_DRIVER
-#define XSTR(S) #S
-#define STR(S) XSTR(S)
-#define OVERRIDE_RS_DRIVER_STRING STR(OVERRIDE_RS_DRIVER)
-    if (!forceDefault) {
-        if (loadRuntime(OVERRIDE_RS_DRIVER_STRING)) {
-            ALOGV("Successfully loaded runtime: %s", OVERRIDE_RS_DRIVER_STRING);
+    if (!forceDefault && mVendorDriverName != nullptr) {
+        if (loadRuntime(mVendorDriverName)) {
+            ALOGV("Successfully loaded runtime: %s", mVendorDriverName);
             loadDefault = false;
         } else {
-            ALOGE("Failed to load runtime %s, loading default", OVERRIDE_RS_DRIVER_STRING);
+            ALOGE("Failed to load runtime %s, loading default", mVendorDriverName);
         }
     }
-#undef XSTR
-#undef STR
-#endif  // OVERRIDE_RS_DRIVER
 
     if (loadDefault) {
         if (!loadRuntime("libRSDriver.so")) {

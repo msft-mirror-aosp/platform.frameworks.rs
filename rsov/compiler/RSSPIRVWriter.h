@@ -17,18 +17,23 @@
 #ifndef RS_SPIRV_WRITER_H
 #define RS_SPIRV_WRITER_H
 
-#include "llvm/ADT/StringRef.h"
+#include <string>
 
 namespace llvm {
 class Module;
 class raw_ostream;
-}
+} // namespace llvm
+
+namespace bcinfo {
+class MetadataExtractor;
+} // namespace bcinfo
 
 namespace rs2spirv {
 
-bool WriteSPIRV(llvm::Module *M, llvm::raw_ostream &OS, std::string &ErrMsg);
-bool Link(llvm::StringRef KrrnelFilename, llvm::StringRef WrapperFilename,
-          llvm::StringRef OutputFilename);
+class Context;
+
+bool WriteSPIRV(rs2spirv::Context &Ctxt, llvm::Module *M,
+                llvm::raw_ostream &OS, std::string &ErrMsg);
 
 } // namespace rs2spirv
 
