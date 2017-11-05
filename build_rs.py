@@ -60,7 +60,7 @@ def build(out_dir):
     products = (
         'aosp_arm',
         'aosp_arm64',
-        'aosp_mips',
+        # 'aosp_mips',
         # 'aosp_mips64',
         'aosp_x86',
         'aosp_x86_64',
@@ -219,7 +219,7 @@ def install_built_device_files(build_dir, install_dir, host):
     product_to_arch = {
         'generic': 'arm',
         'generic_arm64': 'arm64',
-        'generic_mips': 'mips',
+        # 'generic_mips': 'mips',
         # 'generic_mips64': 'mips64el',
         'generic_x86': 'x86',
         'generic_x86_64': 'x86_64',
