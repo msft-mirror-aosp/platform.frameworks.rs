@@ -103,7 +103,6 @@ public class RSTestCore {
         unitTests.add(new UT_fp_mad(this, mRes, mCtx));
         unitTests.add(new UT_reduce(this, mRes, mCtx));
         unitTests.add(new UT_reduce_backward(this, mRes, mCtx));
-        unitTests.add(new UT_reflection3264(this, mCtx));
 
         /*
         unitTests.add(new UnitTest(null, "<Pass>", 1));
