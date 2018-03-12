@@ -398,6 +398,7 @@ def WriteSupportLib19Makefile(gen_file):
       'LOCAL_RENDERSCRIPT_TARGET_API := 19\n'
       'LOCAL_RENDERSCRIPT_COMPATIBILITY := true\n'
       'LOCAL_RENDERSCRIPT_FLAGS := -rs-package-name=android.support.v8.renderscript\n'
+      'LOCAL_SDK_VERSION := current\n'
       'LOCAL_MIN_SDK_VERSION := 8\n\n'
       'my_rs_unit_tests_path := ../RSUnitTests/supportlibsrc_gen/com/android/rs/unittest\n'
   )
@@ -536,6 +537,7 @@ def WriteForwardMakefile(gen_file, build_tool_version, build_tool_version_name):
       'LOCAL_COMPATIBILITY_SUITE := device-tests\n'
       'LOCAL_RENDERSCRIPT_TARGET_API := 0\n'
       'LOCAL_PACKAGE_NAME := {}\n'
+      'LOCAL_SDK_VERSION := current\n'
       'my_rs_path := $(TOP)/prebuilts/renderscript/host/linux-x86/{}\n'
       'LOCAL_RENDERSCRIPT_CC := $(my_rs_path)/bin/llvm-rs-cc\n'
       'LOCAL_RENDERSCRIPT_INCLUDES_OVERRIDE := $(my_rs_path)/include $(my_rs_path)/clang-include\n'
@@ -663,6 +665,7 @@ def WriteBackward19Makefile(gen_file):
       'LOCAL_COMPATIBILITY_SUITE := device-tests\n'
       'LOCAL_RENDERSCRIPT_TARGET_API := 19\n'
       'LOCAL_MIN_SDK_VERSION := 17\n'
+      'LOCAL_SDK_VERSION := current\n'
       'LOCAL_PACKAGE_NAME := RSTestBackward19\n'
       'my_rs_unit_tests_path := ../RSUnitTests/src/com/android/rs/unittest\n'
   )
