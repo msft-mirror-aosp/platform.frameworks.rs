@@ -31,6 +31,7 @@ LOCAL_STATIC_JAVA_LIBRARIES := android-support-test
 LOCAL_COMPATIBILITY_SUITE := device-tests
 LOCAL_RENDERSCRIPT_TARGET_API := 0
 LOCAL_PACKAGE_NAME := RSTestForward_24_0_3
+LOCAL_SDK_VERSION := current
 my_rs_path := $(TOP)/prebuilts/renderscript/host/linux-x86/24.0.3
 LOCAL_RENDERSCRIPT_CC := $(my_rs_path)/bin/llvm-rs-cc
 LOCAL_RENDERSCRIPT_INCLUDES_OVERRIDE := $(my_rs_path)/include $(my_rs_path)/clang-include
