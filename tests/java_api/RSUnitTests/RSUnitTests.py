@@ -131,6 +131,7 @@ UNIT_TEST_PLATFORM_VERSIONS = {
 # Only affects forward compatibility tests.
 # Useful for Slang regression fixes.
 UNIT_TEST_TOOLS_VERSIONS = {
+    'small_struct': 26,
     'reflection3264': 26,
 }
 
