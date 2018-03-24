@@ -149,8 +149,6 @@ LOCAL_SRC_FILES :=\
     $(my_rs_unit_tests_path)/single_source_ref_count.rs\
     $(my_rs_unit_tests_path)/UT_single_source_script.java\
     $(my_rs_unit_tests_path)/single_source_script.rs\
-    $(my_rs_unit_tests_path)/UT_small_struct.java\
-    $(my_rs_unit_tests_path)/small_struct.rs\
     $(my_rs_unit_tests_path)/UT_small_struct_2.java\
     $(my_rs_unit_tests_path)/small_struct_2.rs\
     $(my_rs_unit_tests_path)/UT_static_globals.java\
