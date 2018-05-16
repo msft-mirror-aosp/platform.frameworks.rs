@@ -536,7 +536,7 @@ def WriteForwardMakefile(gen_file, build_tool_version, build_tool_version_name):
       'LOCAL_MODULE_TAGS := tests\n'
       'LOCAL_STATIC_JAVA_LIBRARIES := android-support-test\n'
       'LOCAL_COMPATIBILITY_SUITE := device-tests\n'
-      'LOCAL_RENDERSCRIPT_TARGET_API := 0\n'
+      'LOCAL_RENDERSCRIPT_TARGET_API := current\n'
       'LOCAL_PACKAGE_NAME := {}\n'
       'LOCAL_SDK_VERSION := current\n'
       'my_rs_path := $(TOP)/prebuilts/renderscript/host/linux-x86/{}\n'
