@@ -30,6 +30,7 @@ LOCAL_STATIC_JAVA_LIBRARIES := \
 LOCAL_RENDERSCRIPT_TARGET_API := 19
 LOCAL_RENDERSCRIPT_COMPATIBILITY := true
 LOCAL_RENDERSCRIPT_FLAGS := -rs-package-name=android.support.v8.renderscript
+LOCAL_SDK_VERSION := current
 LOCAL_MIN_SDK_VERSION := 8
 
 my_rs_unit_tests_path := ../RSUnitTests/supportlibsrc_gen/com/android/rs/unittest
