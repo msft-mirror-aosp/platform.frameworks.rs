@@ -191,9 +191,3 @@ include $(LLVM_DEVICE_BUILD_MK)
 include $(BUILD_EXECUTABLE)
 
 endif # Don't build in unbundled branches
-
-#=====================================================================
-# Include Subdirectories
-#=====================================================================
-
-include $(call all-makefiles-under,$(LOCAL_PATH))
