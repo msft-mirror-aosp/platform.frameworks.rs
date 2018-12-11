@@ -342,7 +342,6 @@ void printApiCpp(FILE *f) {
     fprintf(f, "\n");
 
     for (ct=0; ct < apiCount; ct++) {
-        int needFlush = 0;
         const ApiEntry * api = &apis[ct];
 
         fprintf(f, "extern \"C\" ");
