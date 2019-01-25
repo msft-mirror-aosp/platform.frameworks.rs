@@ -127,5 +127,4 @@ cc_library_shared {
             enabled: false,
         },
     },
-    xom: false,
 }
