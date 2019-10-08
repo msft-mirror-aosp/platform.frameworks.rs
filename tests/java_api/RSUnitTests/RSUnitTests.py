@@ -327,7 +327,7 @@ def CopyUnitTestJavaFileToSupportLibTest(java_file_name, java_file_dir):
     for line in in_file.readlines():
       if line.startswith('import android.renderscript.'):
         line = line.replace('android.renderscript.',
-                            'android.support.v8.renderscript.')
+                            'androidx.renderscript.')
       out_file.write(line)
 
 
@@ -398,7 +398,7 @@ def WriteSupportLib19Makefile(gen_file):
       '    android-support-v8-renderscript \\\n\n'
       'LOCAL_RENDERSCRIPT_TARGET_API := 19\n'
       'LOCAL_RENDERSCRIPT_COMPATIBILITY := true\n'
-      'LOCAL_RENDERSCRIPT_FLAGS := -rs-package-name=android.support.v8.renderscript\n'
+      'LOCAL_RENDERSCRIPT_FLAGS := -rs-package-name=androidx.renderscript\n'
       'LOCAL_SDK_VERSION := current\n'
       'LOCAL_MIN_SDK_VERSION := 8\n\n'
       'my_rs_unit_tests_path := ../RSUnitTests/supportlibsrc_gen/com/android/rs/unittest\n'
