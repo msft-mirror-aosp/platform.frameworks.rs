@@ -23,6 +23,8 @@ cc_library_shared {
         "-DRS_COMPATIBILITY_LIB",
     ],
 
+    header_libs: ["jni_headers"],
+
     shared_libs: [
         "libandroid",
         "libdl",
@@ -42,6 +44,9 @@ cc_library_shared {
     sdk_version: "9",
 
     srcs: ["android_renderscript_RenderScript.cpp"],
+
+    header_libs: ["jni_headers"],
+    export_header_lib_headers: ["jni_headers"],
 
     shared_libs: [
         "libdl",
