@@ -58,8 +58,14 @@ cc_defaults {
 
     // We need to export not just rs/cpp but also rs.  This is because
     // RenderScript.h includes rsCppStructs.h, which includes rs/rsDefines.h.
-    header_libs: ["rs-headers"],
-    export_header_lib_headers: ["rs-headers"],
+    header_libs: [
+        "jni_headers",
+        "rs-headers"
+    ],
+    export_header_lib_headers: [
+        "jni_headers",
+        "rs-headers"
+    ],
     export_include_dirs: ["."],
 
     shared_libs: [
