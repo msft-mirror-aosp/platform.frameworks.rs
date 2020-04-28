@@ -270,6 +270,8 @@ cc_library_shared {
     // Treble configuration
     shared_libs: [
         "libhidlbase",
+        "libhidltransport",
+        "libhwbinder",
         "libutilscallstack",
         "libutils",
         "android.hardware.renderscript@1.0",

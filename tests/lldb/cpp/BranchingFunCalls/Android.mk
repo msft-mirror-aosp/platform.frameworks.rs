@@ -5,7 +5,7 @@ LOCAL_MODULE := CppBranchingFunCalls
 
 LOCAL_SRC_FILES := \
 	BranchingFunCalls.cpp \
-	scalars.rscript
+	scalars.rs
 
 include frameworks/rs/tests/lldb/cpp/common.mk
 include $(BUILD_EXECUTABLE)

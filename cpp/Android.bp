@@ -6,9 +6,7 @@ cc_library_static {
 
     include_dirs: [
         "frameworks/rs",
-    ],
-    header_libs: [
-        "jni_headers",
+        "libnativehelper/include_jni",
     ],
 
     cflags: [
@@ -65,6 +63,7 @@ cc_defaults {
     shared_libs: [
         "libdl",
         "liblog",
+        "libz",
     ],
 }
 
@@ -72,15 +71,8 @@ cc_library {
     name: "libRScpp",
     defaults: ["libRScpp-defaults"],
 
-    header_libs: [
-        "libarect_headers",
-        "libbase_headers",
-        "libgui_headers",
-        "libnativebase_headers",
-        "libnativewindow_headers",
-    ],
-
     shared_libs: [
+        "libgui",
         "libutils",
     ],
 

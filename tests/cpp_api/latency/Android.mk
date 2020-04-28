@@ -7,7 +7,7 @@ LOCAL_SDK_VERSION := 21
 LOCAL_NDK_STL_VARIANT := c++_static
 
 LOCAL_SRC_FILES:= \
-	latency.rscript \
+	latency.rs \
 	latency.cpp
 
 LOCAL_STATIC_LIBRARIES := \

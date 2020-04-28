@@ -5,7 +5,7 @@ LOCAL_MODULE := CppAllocations
 
 LOCAL_SRC_FILES := \
 	Allocations.cpp \
-	allocs.rscript
+	allocs.rs
 
 LOCAL_STATIC_LIBRARIES := libcompiler_rt
 

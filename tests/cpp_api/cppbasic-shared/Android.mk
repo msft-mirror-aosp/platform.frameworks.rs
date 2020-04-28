@@ -6,7 +6,7 @@ LOCAL_MODULE:= rstest-compute-shared
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
 
 LOCAL_SRC_FILES:= \
-	mono.rscript \
+	mono.rs \
 	compute.cpp
 
 LOCAL_SHARED_LIBRARIES := \
