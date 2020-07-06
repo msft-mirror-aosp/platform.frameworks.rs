@@ -23,10 +23,9 @@ LOCAL_MODULE := libhellocomputendk
 LOCAL_MODULE_TAGS := tests
 LOCAL_SRC_FILES := helloComputeNDK.cpp mono.rscript
 
-LOCAL_C_INCLUDES := $(JNI_H_INCLUDE)
-
 LOCAL_CFLAGS := -Wall -Werror
 LOCAL_LDFLAGS := -Wl,-Bsymbolic
+LOCAL_HEADER_LIBRARIES := jni_headers
 LOCAL_SHARED_LIBRARIES := libdl liblog libjnigraphics
 LOCAL_STATIC_LIBRARIES := libRScpp_static
 
