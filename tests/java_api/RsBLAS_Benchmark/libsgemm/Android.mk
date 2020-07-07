@@ -24,6 +24,6 @@ LOCAL_SRC_FILES := test_data.cpp
 LOCAL_SDK_VERSION := current
 
 LOCAL_CFLAGS := -Wall -Werror
-LOCAL_C_INCLUDES := $(JNI_H_INCLUDE)
+LOCAL_HEADER_LIBRARIES := jni_headers
 
 include $(BUILD_SHARED_LIBRARY)
