@@ -10,7 +10,7 @@ cc_binary_host {
         "GenerateTestFiles.cpp",
         "Scanner.cpp",
         "Utilities.cpp",
-        "GenerateStubsWhiteList.cpp",
+        "GenerateRSFunctionsList.cpp",
     ],
 
     cflags: [
