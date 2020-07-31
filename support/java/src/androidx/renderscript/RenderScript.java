@@ -65,13 +65,13 @@ public class RenderScript {
 
     static private String mBlackList = "";
      /**
-     * Sets the blackList of Models to only use support lib runtime.
+     * Sets the denylist of Models to only use support lib runtime.
      * Should be used before context create.
      *
-     * @param blackList User provided black list string.
+     * @param denylist User provided denylist string.
      *
      * Format: "(MANUFACTURER1:PRODUCT1:MODEL1), (MANUFACTURER2:PRODUCT2:MODEL2)..."
-     * e.g. : To Blacklist Nexus 7(2013) and Nexus 5.
+     * e.g. : To Denylist Nexus 7(2013) and Nexus 5.
      *        mBlackList = "(asus:razor:Nexus 7), (LGE:hammerhead:Nexus 5)";
      */
     static public void setBlackList(String blackList) {
@@ -224,7 +224,7 @@ public class RenderScript {
         }
 
         if (sNative == 1) {
-            // check against the blacklist
+            // check against the denylist
             if (mBlackList.length() > 0) {
                 String deviceInfo = '(' +
                                     android.os.Build.MANUFACTURER +
@@ -797,7 +797,7 @@ public class RenderScript {
                 mIncLoaded = true;
             }
             if (mIncCon == 0) {
-                //Create a dummy compat context (synchronous).
+                //Create a placeholder compat context (synchronous).
                 long device = nIncDeviceCreate();
                 mIncCon = nIncContextCreate(device, 0, 0, 0);
             }
@@ -1044,7 +1044,7 @@ public class RenderScript {
 
     long     mContext;
     private boolean mDestroyed = false;
-    //Dummy device & context for Inc Support Lib
+    //Placeholder device & context for Inc Support Lib
     long     mIncCon;
     //indicator of whether inc support lib has been loaded or not.
     boolean  mIncLoaded;
