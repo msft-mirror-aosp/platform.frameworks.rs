@@ -63,7 +63,7 @@ public class RenderScript {
     private Context mApplicationContext;
     private String mNativeLibDir;
 
-    static private String mBlackList = "";
+    static private String mDenyList = "";
      /**
      * Sets the denylist of Models to only use support lib runtime.
      * Should be used before context create.
@@ -72,11 +72,11 @@ public class RenderScript {
      *
      * Format: "(MANUFACTURER1:PRODUCT1:MODEL1), (MANUFACTURER2:PRODUCT2:MODEL2)..."
      * e.g. : To Denylist Nexus 7(2013) and Nexus 5.
-     *        mBlackList = "(asus:razor:Nexus 7), (LGE:hammerhead:Nexus 5)";
+     *        mDenyList = "(asus:razor:Nexus 7), (LGE:hammerhead:Nexus 5)";
      */
-    static public void setBlackList(String blackList) {
-        if (blackList != null) {
-            mBlackList = blackList;
+    static public void setDenyList(String denyList) {
+        if (denyList != null) {
+            mDenyList = denyList;
         }
     }
      /**
@@ -225,7 +225,7 @@ public class RenderScript {
 
         if (sNative == 1) {
             // check against the denylist
-            if (mBlackList.length() > 0) {
+            if (mDenyList.length() > 0) {
                 String deviceInfo = '(' +
                                     android.os.Build.MANUFACTURER +
                                     ':' +
@@ -233,7 +233,7 @@ public class RenderScript {
                                     ':' +
                                     android.os.Build.MODEL +
                                     ')';
-                if (mBlackList.contains(deviceInfo)) {
+                if (mDenyList.contains(deviceInfo)) {
                     sNative = 0;
                     return false;
                 }
