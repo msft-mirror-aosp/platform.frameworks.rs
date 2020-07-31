@@ -755,7 +755,7 @@ public class Element extends BaseObj {
     }
 
     /*
-     * Get an identical dummy Element for Compat Context
+     * Get an identical placeholder Element for Compat Context
      *
      */
     public long getDummyElement(RenderScript mRS) {
