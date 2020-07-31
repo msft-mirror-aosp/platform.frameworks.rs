@@ -173,7 +173,7 @@ class State(object):
             # use the default configuration
             config = Config()
 
-        # save the test blacklist
+        # save the test denylist
         self.blacklist = _choice(args.blacklist, config.blacklist)
 
         # Allow any of the command line arguments to override the

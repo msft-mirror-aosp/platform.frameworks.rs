@@ -190,7 +190,7 @@ public class Type extends BaseObj {
     }
 
     /*
-     * Get an identical dummy Type for Compat Context
+     * Get an identical placeholder Type for Compat Context
      *
      */
     public long getDummyType(RenderScript mRS, long eid) {

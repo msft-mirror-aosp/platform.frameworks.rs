@@ -442,7 +442,7 @@ static bool generateRSFunctionsListFile(unsigned int lastApiLevel) {
 // Add a uniquely named variable definition to the file and return its name.
 static const string addVariable(GeneratedFile* file, unsigned int* variableNumber) {
     const string name = "buf" + to_string((*variableNumber)++);
-    /* Some data structures like rs_tm can't be exported.  We'll just use a dumb buffer
+    /* Some data structures like rs_tm can't be exported.  We'll just use a unexpected buffer
      * and cast its address later on.
      */
     *file << "char " << name << "[200];\n";
