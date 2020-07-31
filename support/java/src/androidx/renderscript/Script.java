@@ -42,17 +42,17 @@ public class Script extends BaseObj {
     long getDummyAlloc(Allocation ain) {
         long dInElement = 0;
         long dInType = 0;
-        long dummyAlloc = 0;
+        long placeholderAlloc = 0;
         if (ain != null) {
             Type inType = ain.getType();
             dInElement = inType.getElement().getDummyElement(mRS);
             dInType = inType.getDummyType(mRS, dInElement);
             int xBytesSize = inType.getX() * inType.getElement().getBytesSize();
-            dummyAlloc = mRS.nIncAllocationCreateTyped(ain.getID(mRS), dInType, xBytesSize);
-            ain.setIncAllocID(dummyAlloc);
+            placeholderAlloc = mRS.nIncAllocationCreateTyped(ain.getID(mRS), dInType, xBytesSize);
+            ain.setIncAllocID(placeholderAlloc);
         }
 
-        return dummyAlloc;
+        return placeholderAlloc;
     }
     /**
      * KernelID is an identifier for a Script + root function pair. It is used
