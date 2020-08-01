@@ -225,7 +225,7 @@ public class Allocation extends BaseObj {
     }
 
     /**
-     * Getter & Setter for the dummy allocation for Inc Support Lib.
+     * Getter & Setter for the placeholder allocation for Inc Support Lib.
      *
      */
     public long getIncAllocID() {
