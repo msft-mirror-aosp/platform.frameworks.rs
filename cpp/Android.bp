@@ -1,5 +1,6 @@
 cc_library_static {
     name: "libRSDispatch",
+    native_bridge_supported: true,
     vendor_available: true,
 
     srcs: ["rsDispatch.cpp"],
@@ -81,12 +82,12 @@ cc_library {
     header_libs: [
         "libarect_headers",
         "libbase_headers",
-        "libgui_headers",
         "libnativebase_headers",
         "libnativewindow_headers",
     ],
 
     shared_libs: [
+        "libgui",
         "libutils",
     ],
 

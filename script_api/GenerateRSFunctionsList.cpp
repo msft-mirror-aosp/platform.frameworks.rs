@@ -386,18 +386,18 @@ static bool addManglingsForSpecification(const FunctionSpecification& spec,
     return success;
 }
 
-/* Generate the white list file of the mangled function prototypes.  This generated list is used
+/* Generate the file with the mangled function names.  This generated list is used
  * to validate unresolved external references.  'lastApiLevel' is the largest api level found in
  * all spec files.
  */
-static bool generateWhiteListFile(unsigned int lastApiLevel) {
+static bool generateRSFunctionsListFile(unsigned int lastApiLevel) {
     bool success = true;
     // We generate all the manglings in a set to remove duplicates and to order them.
     set<string> allManglings;
     for (auto f : systemSpecification.getFunctions()) {
         const Function* function = f.second;
         for (auto spec : function->getSpecifications()) {
-            // Compiler intrinsics are not runtime APIs. Do not include them in the whitelist.
+            // Compiler intrinsics are not runtime APIs. Do not include them.
             if (spec->isIntrinsic()) {
                 continue;
             }
@@ -410,12 +410,12 @@ static bool generateWhiteListFile(unsigned int lastApiLevel) {
 
     if (success) {
         GeneratedFile file;
-        if (!file.start(".", "RSStubsWhiteList.cpp")) {
+        if (!file.start(".", "RSFunctionsList.cpp")) {
             return false;
         }
 
         file.writeNotices();
-        file << "#include \"RSStubsWhiteList.h\"\n\n";
+        file << "#include \"RSFunctionsList.h\"\n\n";
         file << "std::array<std::string_view, " << allManglings.size() << "> stubList = {\n";
         for (const auto& e : allManglings) {
             file << "\"" << e << "\",\n";
@@ -423,18 +423,18 @@ static bool generateWhiteListFile(unsigned int lastApiLevel) {
         file << "};\n";
 
         GeneratedFile header;
-        if (!header.start(".", "RSStubsWhiteList.h")) {
+        if (!header.start(".", "RSFunctionsList.h")) {
             return false;
         }
 
         header.writeNotices();
-        header << "#ifndef RSStubsWhiteList_H\n";
-        header << "#define RSStubsWhiteList_H\n\n";
+        header << "#ifndef RSFunctionsList_H\n";
+        header << "#define RSFunctionsList_H\n\n";
         header << "#include <cstdlib>\n";
         header << "#include <array>\n";
         header << "#include <string_view>\n\n";
         header << "extern std::array<std::string_view, " << allManglings.size() << "> stubList;\n\n";
-        header << "#endif // RSStubsWhiteList_H\n";
+        header << "#endif // RSFunctionsList_H\n";
     }
     return success;
 }
@@ -442,7 +442,7 @@ static bool generateWhiteListFile(unsigned int lastApiLevel) {
 // Add a uniquely named variable definition to the file and return its name.
 static const string addVariable(GeneratedFile* file, unsigned int* variableNumber) {
     const string name = "buf" + to_string((*variableNumber)++);
-    /* Some data structures like rs_tm can't be exported.  We'll just use a dumb buffer
+    /* Some data structures like rs_tm can't be exported.  We'll just use a unexpected buffer
      * and cast its address later on.
      */
     *file << "char " << name << "[200];\n";
@@ -493,7 +493,7 @@ static void generateTestCall(GeneratedFile* file, ostringstream* calls,
  * Since some structures can't be defined at the global level, we use casts of simple byte
  * buffers to get around that restriction.
  *
- * This file can be used to verify the white list that's also generated in this file.  To do so,
+ * This file can be used to verify the function list that's also generated in this file.  To do so,
  * run "llvm-nm -undefined-only -just-symbol-name" on the resulting bit code.
  */
 static bool generateApiTesterFile(const string& slangTestDirectory, unsigned int apiLevel) {
@@ -562,9 +562,9 @@ static bool generateApiTesterFile(const string& slangTestDirectory, unsigned int
     return true;
 }
 
-bool generateStubsWhiteList(const string& slangTestDirectory, unsigned int maxApiLevel) {
+bool generateRSFunctionsList(const string& slangTestDirectory, unsigned int maxApiLevel) {
     unsigned int lastApiLevel = min(systemSpecification.getMaximumApiLevel(), maxApiLevel);
-    if (!generateWhiteListFile(lastApiLevel)) {
+    if (!generateRSFunctionsListFile(lastApiLevel)) {
         return false;
     }
     // Generate a test file for each apiLevel.
