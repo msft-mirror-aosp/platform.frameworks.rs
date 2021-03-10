@@ -14,48 +14,71 @@
  * limitations under the License.
  */
 
+#include <cstdint>
 
-#include "rsCpuIntrinsic.h"
-#include "rsCpuIntrinsicInlines.h"
+#include "RenderScriptToolkit.h"
+#include "TaskProcessor.h"
+#include "Utils.h"
 
-#ifdef RS_COMPATIBILITY_LIB
-#include "rsCompatibilityLib.h"
-#endif
-
-#ifndef RS_COMPATIBILITY_LIB
-#include "hardware/gralloc.h"
-#endif
+#define LOG_TAG "renderscript.toolkit.YuvToRgb"
 
 namespace android {
 namespace renderscript {
 
-
-class RsdCpuScriptIntrinsicYuvToRGB : public RsdCpuScriptIntrinsic {
-public:
-    void populateScript(Script *) override;
-    void invokeFreeChildren() override;
-
-    void setGlobalObj(uint32_t slot, ObjectBase *data) override;
-
-    ~RsdCpuScriptIntrinsicYuvToRGB() override;
-    RsdCpuScriptIntrinsicYuvToRGB(RsdCpuReferenceImpl *ctx, const Script *s, const Element *e);
-
-protected:
-    ObjectBaseRef<Allocation> alloc;
-
-    static void kernel(const RsExpandKernelDriverInfo *info,
-                       uint32_t xstart, uint32_t xend,
-                       uint32_t outstep);
-};
-
-
-void RsdCpuScriptIntrinsicYuvToRGB::setGlobalObj(uint32_t slot, ObjectBase *data) {
-    rsAssert(slot == 0);
-    alloc.set(static_cast<Allocation *>(data));
+inline size_t roundUpTo16(size_t val) {
+    return (val + 15) & ~15;
 }
 
+class YuvToRgbTask : public Task {
+    uchar4* mOut;
+    size_t mCstep;
+    size_t mStrideY;
+    size_t mStrideU;
+    size_t mStrideV;
+    const uchar* mInY;
+    const uchar* mInU;
+    const uchar* mInV;
 
+    void kernel(uchar4* out, uint32_t xstart, uint32_t xend, uint32_t currentY);
+    // Process a 2D tile of the overall work. threadIndex identifies which thread does the work.
+    virtual void processData(int threadIndex, size_t startX, size_t startY, size_t endX,
+                             size_t endY) override;
 
+   public:
+    YuvToRgbTask(const uint8_t* input, uint8_t* output, size_t sizeX, size_t sizeY,
+                 RenderScriptToolkit::YuvFormat format)
+        : Task{sizeX, sizeY, 4, false, nullptr}, mOut{reinterpret_cast<uchar4*>(output)} {
+        switch (format) {
+            case RenderScriptToolkit::YuvFormat::NV21:
+                mCstep = 2;
+                mStrideY = sizeX;
+                mStrideU = mStrideY;
+                mStrideV = mStrideY;
+                mInY = reinterpret_cast<const uchar*>(input);
+                mInV = reinterpret_cast<const uchar*>(input + mStrideY * sizeY);
+                mInU = mInV + 1;
+                break;
+            case RenderScriptToolkit::YuvFormat::YV12:
+                mCstep = 1;
+                mStrideY = roundUpTo16(sizeX);
+                mStrideU = roundUpTo16(mStrideY >> 1);
+                mStrideV = mStrideU;
+                mInY = reinterpret_cast<const uchar*>(input);
+                mInU = reinterpret_cast<const uchar*>(input + mStrideY * sizeY);
+                mInV = mInU + mStrideV * sizeY / 2;
+                break;
+        }
+    }
+};
+
+void YuvToRgbTask::processData(int /* threadIndex */, size_t startX, size_t startY, size_t endX,
+                               size_t endY) {
+    for (size_t y = startY; y < endY; y++) {
+        size_t offset = mSizeX * y + startX;
+        uchar4* out = mOut + offset;
+        kernel(out, startX, endX, y);
+    }
+}
 
 static uchar4 rsYuvToRGBA_uchar4(uchar y, uchar u, uchar v) {
     int16_t Y = ((int16_t)y) - 16;
@@ -90,7 +113,6 @@ static uchar4 rsYuvToRGBA_uchar4(uchar y, uchar u, uchar v) {
                     static_cast<uchar>(p.z), static_cast<uchar>(p.w)};
 }
 
-
 extern "C" void rsdIntrinsicYuv_K(void *dst, const uchar *Y, const uchar *uv, uint32_t xstart,
                                   size_t xend);
 extern "C" void rsdIntrinsicYuvR_K(void *dst, const uchar *Y, const uchar *uv, uint32_t xstart,
@@ -98,86 +120,96 @@ extern "C" void rsdIntrinsicYuvR_K(void *dst, const uchar *Y, const uchar *uv, u
 extern "C" void rsdIntrinsicYuv2_K(void *dst, const uchar *Y, const uchar *u, const uchar *v,
                                    size_t xstart, size_t xend);
 
-void RsdCpuScriptIntrinsicYuvToRGB::kernel(const RsExpandKernelDriverInfo *info,
-                                           uint32_t xstart, uint32_t xend,
-                                           uint32_t outstep) {
-    RsdCpuScriptIntrinsicYuvToRGB *cp = (RsdCpuScriptIntrinsicYuvToRGB *)info->usr;
-    if (!cp->alloc.get()) {
-        ALOGE("YuvToRGB executed without input, skipping");
-        return;
-    }
-    const uchar *pinY = (const uchar *)cp->alloc->mHal.drvState.lod[0].mallocPtr;
-    if (pinY == nullptr) {
-        ALOGE("YuvToRGB executed without data, skipping");
-        return;
-    }
+void YuvToRgbTask::kernel(uchar4 *out, uint32_t xstart, uint32_t xend, uint32_t currentY) {
+    //ALOGI("kernel out %p, xstart=%u, xend=%u, currentY=%u", out, xstart, xend, currentY);
 
-    size_t strideY = cp->alloc->mHal.drvState.lod[0].stride;
+    const uchar *y = mInY + (currentY * mStrideY);
+    const uchar *v = mInV + ((currentY >> 1) * mStrideV);
+    const uchar *u = mInU + ((currentY >> 1) * mStrideU);
 
-    // calculate correct stride in legacy case
-    if (cp->alloc->mHal.drvState.lod[0].dimY == 0) {
-        strideY = info->dim.x;
-    }
-    const uchar *Y = pinY + (info->current.y * strideY);
+    //ALOGI("pinY %p, pinV %p, pinU %p", pinY, pinV, pinU);
 
-    uchar4 *out = (uchar4 *)info->outPtr[0] + xstart;
     uint32_t x1 = xstart;
     uint32_t x2 = xend;
 
-    size_t cstep = cp->alloc->mHal.drvState.yuv.step;
+    /*
+    ALOGE("pinY, %p, Y, %p, currentY, %d, strideY, %zu", pinY, y, currentY, mStrideY);
+    ALOGE("pinU, %p, U, %p, currentY, %d, strideU, %zu", pinU, u, currentY, mStrideU);
+    ALOGE("pinV, %p, V, %p, currentY, %d, strideV, %zu", pinV, v, currentY, mStrideV);
+    ALOGE("dimX, %d, dimY, %d", cp->alloc->mHal.drvState.lod[0].dimX,
+          cp->alloc->mHal.drvState.lod[0].dimY);
+    ALOGE("info->dim.x, %d, info->dim.y, %d", info->dim.x, info->dim.y);
+    uchar* pinY = (uchar*)mInY;
+    uchar* pinU = (uchar*)mInU;
+    uchar* pinV = (uchar*)mInV;
+    ALOGE("Y %p %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx "
+          "%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx",
+          pinY, pinY[0], pinY[1], pinY[2], pinY[3], pinY[4], pinY[5], pinY[6], pinY[7], pinY[8],
+          pinY[9], pinY[10], pinY[11], pinY[12], pinY[13], pinY[14], pinY[15]);
+    ALOGE("Y %p %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx "
+          "%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx",
+          pinY, pinY[16], pinY[17], pinY[18], pinY[19], pinY[20], pinY[21], pinY[22], pinY[23],
+          pinY[24], pinY[25], pinY[26], pinY[27], pinY[28], pinY[29], pinY[30], pinY[31]);
+    ALOGE("Y %p %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx "
+          "%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx",
+          pinY, pinY[32], pinY[33], pinY[34], pinY[35], pinY[36], pinY[37], pinY[38], pinY[39],
+          pinY[40], pinY[41], pinY[42], pinY[43], pinY[44], pinY[45], pinY[46], pinY[47]);
 
-    const uchar *pinU = (const uchar *)cp->alloc->mHal.drvState.lod[1].mallocPtr;
-    const size_t strideU = cp->alloc->mHal.drvState.lod[1].stride;
-    const uchar *u = pinU + ((info->current.y >> 1) * strideU);
+    ALOGE("U %p %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx "
+          "%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx",
+          pinU, pinU[0], pinU[1], pinU[2], pinU[3], pinU[4], pinU[5], pinU[6], pinU[7], pinU[8],
+          pinU[9], pinU[10], pinU[11], pinU[12], pinU[13], pinU[14], pinU[15]);
+    ALOGE("U %p %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx "
+          "%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx",
+          pinU, pinU[16], pinU[17], pinU[18], pinU[19], pinU[20], pinU[21], pinU[22], pinU[23],
+          pinU[24], pinU[25], pinU[26], pinU[27], pinU[28], pinU[29], pinU[30], pinU[31]);
+    ALOGE("U %p %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx "
+          "%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx",
+          pinU, pinU[32], pinU[33], pinU[34], pinU[35], pinU[36], pinU[37], pinU[38], pinU[39],
+          pinU[40], pinU[41], pinU[42], pinU[43], pinU[44], pinU[45], pinU[46], pinU[47]);
 
-    const uchar *pinV = (const uchar *)cp->alloc->mHal.drvState.lod[2].mallocPtr;
-    const size_t strideV = cp->alloc->mHal.drvState.lod[2].stride;
-    const uchar *v = pinV + ((info->current.y >> 1) * strideV);
-
-    //ALOGE("pinY, %p, Y, %p, info->current.y, %d, strideY, %d", pinY, Y, info->current.y, strideY);
-    //ALOGE("pinU, %p, U, %p, info->current.y, %d, strideU, %d", pinU, u, info->current.y, strideU);
-    //ALOGE("pinV, %p, V, %p, info->current.y, %d, strideV, %d", pinV, v, info->current.y, strideV);
-    //ALOGE("dimX, %d, dimY, %d", cp->alloc->mHal.drvState.lod[0].dimX,
-    //      cp->alloc->mHal.drvState.lod[0].dimY);
-    //ALOGE("info->dim.x, %d, info->dim.y, %d", info->dim.x, info->dim.y);
-
-    if (pinU == nullptr) {
-        // Legacy yuv support didn't fill in uv
-        v = ((uint8_t *)cp->alloc->mHal.drvState.lod[0].mallocPtr) +
-            (strideY * info->dim.y) +
-            ((info->current.y >> 1) * strideY);
-        u = v + 1;
-        cstep = 2;
-    }
+    ALOGE("V %p %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx "
+          "%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx",
+          pinV, pinV[0], pinV[1], pinV[2], pinV[3], pinV[4], pinV[5], pinV[6], pinV[7], pinV[8],
+          pinV[9], pinV[10], pinV[11], pinV[12], pinV[13], pinV[14], pinV[15]);
+    ALOGE("V %p %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx "
+          "%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx",
+          pinV, pinV[16], pinV[17], pinV[18], pinV[19], pinV[20], pinV[21], pinV[22], pinV[23],
+          pinV[24], pinV[25], pinV[26], pinV[27], pinV[28], pinV[29], pinV[30], pinV[31]);
+    ALOGE("V %p %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx "
+          "%02hhx %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx",
+          pinV, pinV[32], pinV[33], pinV[34], pinV[35], pinV[36], pinV[37], pinV[38], pinV[39],
+          pinV[40], pinV[41], pinV[42], pinV[43], pinV[44], pinV[45], pinV[46], pinV[47]);
+    */
 
     /* If we start on an odd pixel then deal with it here and bump things along
      * so that subsequent code can carry on with even-odd pairing assumptions.
      */
     if((x1 & 1) && (x2 > x1)) {
-        int cx = (x1 >> 1) * cstep;
-        *out = rsYuvToRGBA_uchar4(Y[x1], u[cx], v[cx]);
+        int cx = (x1 >> 1) * mCstep;
+        *out = rsYuvToRGBA_uchar4(y[x1], u[cx], v[cx]);
         out++;
         x1++;
     }
 
 #if defined(ARCH_ARM_USE_INTRINSICS)
-    if((x2 > x1) && gArchUseSIMD) {
+    if((x2 > x1) && mUsesSimd) {
         int32_t len = x2 - x1;
-        if (cstep == 1) {
-            rsdIntrinsicYuv2_K(info->outPtr[0], Y, u, v, x1, x2);
+        if (mCstep == 1) {
+            rsdIntrinsicYuv2_K(out, y, u, v, x1, x2);
             x1 += len;
             out += len;
-        } else if (cstep == 2) {
+        } else if (mCstep == 2) {
             // Check for proper interleave
             intptr_t ipu = (intptr_t)u;
             intptr_t ipv = (intptr_t)v;
 
             if (ipu == (ipv + 1)) {
-                rsdIntrinsicYuv_K(info->outPtr[0], Y, v, x1, x2);
+                rsdIntrinsicYuv_K(out, y, v, x1, x2);
                 x1 += len;
                 out += len;
             } else if (ipu == (ipv - 1)) {
-                rsdIntrinsicYuvR_K(info->outPtr[0], Y, u, x1, x2);
+                rsdIntrinsicYuvR_K(out, y, u, x1, x2);
                 x1 += len;
                 out += len;
             }
@@ -186,42 +218,24 @@ void RsdCpuScriptIntrinsicYuvToRGB::kernel(const RsExpandKernelDriverInfo *info,
 #endif
 
     if(x2 > x1) {
-       // ALOGE("y %i  %i  %i", info->current.y, x1, x2);
+       // ALOGE("y %i  %i  %i", currentY, x1, x2);
         while(x1 < x2) {
-            int cx = (x1 >> 1) * cstep;
-            *out = rsYuvToRGBA_uchar4(Y[x1], u[cx], v[cx]);
+            int cx = (x1 >> 1) * mCstep;
+            *out = rsYuvToRGBA_uchar4(y[x1], u[cx], v[cx]);
             out++;
             x1++;
-            *out = rsYuvToRGBA_uchar4(Y[x1], u[cx], v[cx]);
+            *out = rsYuvToRGBA_uchar4(y[x1], u[cx], v[cx]);
             out++;
             x1++;
         }
     }
-
 }
 
-RsdCpuScriptIntrinsicYuvToRGB::RsdCpuScriptIntrinsicYuvToRGB(
-            RsdCpuReferenceImpl *ctx, const Script *s, const Element *e)
-            : RsdCpuScriptIntrinsic(ctx, s, e, RS_SCRIPT_INTRINSIC_ID_YUV_TO_RGB) {
-
-    mRootPtr = &kernel;
+void RenderScriptToolkit::yuvToRgb(const uint8_t* input, uint8_t* output, size_t sizeX,
+                                   size_t sizeY, YuvFormat format) {
+    YuvToRgbTask task(input, output, sizeX, sizeY, format);
+    processor->doTask(&task);
 }
 
-RsdCpuScriptIntrinsicYuvToRGB::~RsdCpuScriptIntrinsicYuvToRGB() {
-}
-
-void RsdCpuScriptIntrinsicYuvToRGB::populateScript(Script *s) {
-    s->mHal.info.exportedVariableCount = 1;
-}
-
-void RsdCpuScriptIntrinsicYuvToRGB::invokeFreeChildren() {
-    alloc.clear();
-}
-
-RsdCpuScriptImpl * rsdIntrinsic_YuvToRGB(RsdCpuReferenceImpl *ctx,
-                                         const Script *s, const Element *e) {
-    return new RsdCpuScriptIntrinsicYuvToRGB(ctx, s, e);
-}
-
-} // namespace renderscript
-} // namespace android
+}  // namespace renderscript
+}  // namespace android

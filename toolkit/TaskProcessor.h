@@ -30,24 +30,6 @@ namespace android {
 namespace renderscript {
 
 /**
- * Define a range of data to process.
- *
- * This class is used to restrict a Toolkit operation to a rectangular subset of the input
- * tensor.
- *
- * @property startX The index of the first value to be included on the X axis.
- * @property endX The index after the last value to be included on the X axis.
- * @property startY The index of the first value to be included on the Y axis.
- * @property endY The index after the last value to be included on the Y axis.
- */
-struct Restriction {
-    size_t startX;
-    size_t endX;
-    size_t startY;
-    size_t endY;
-};
-
-/**
  * Description of the data to be processed for one Toolkit method call, e.g. one blur or one
  * blend operation.
  *
@@ -78,6 +60,16 @@ class Task {
      */
     const size_t mVectorSize;
     /**
+     * Whether the task prefers the processData call to represent the work to be done as
+     * one line rather than a rectangle. This would be the case for work that don't involve
+     * vertical neighbors, e.g. blend or histogram. A task would prefer this to minimize the
+     * number of SIMD calls to make, i.e. have one call that covers all the rows.
+     *
+     * This setting will be used only when a tile covers the entire width of the data to be
+     * processed.
+     */
+    const bool mPrefersDataAsOneRow;
+    /**
      * Whether the processor we're working on supports SIMD operations.
      */
     bool mUsesSimd = false;
@@ -86,7 +78,7 @@ class Task {
     /**
      * If not null, we'll process a subset of the whole 2D array. This specifies the restriction.
      */
-    const Restriction* mRestriction;
+    const struct Restriction* mRestriction;
 
     /**
      * We'll divide the work into rectangular tiles. See setTiling().
@@ -117,8 +109,13 @@ class Task {
      * The restriction should outlive this instance. The Toolkit validates the
      * arguments so we won't do that again here.
      */
-    Task(size_t sizeX, size_t sizeY, size_t vectorSize, const Restriction* restriction = nullptr)
-        : mSizeX{sizeX}, mSizeY{sizeY}, mVectorSize{vectorSize}, mRestriction{restriction} {}
+    Task(size_t sizeX, size_t sizeY, size_t vectorSize, bool prefersDataAsOneRow,
+         const Restriction* restriction)
+        : mSizeX{sizeX},
+          mSizeY{sizeY},
+          mVectorSize{vectorSize},
+          mPrefersDataAsOneRow{prefersDataAsOneRow},
+          mRestriction{restriction} {}
     virtual ~Task() {}
 
     void setUsesSimd(bool uses) { mUsesSimd = uses; }

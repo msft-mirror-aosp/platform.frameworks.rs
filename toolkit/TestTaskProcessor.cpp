@@ -13,7 +13,7 @@ class SimpleTask : public android::renderscript::Task {
 
    public:
     SimpleTask(uint8_t* buffer, size_t vectorSize, size_t sizeX, size_t sizeY, uint8_t delta)
-        : Task{sizeX, sizeY, vectorSize}, mBuffer{buffer}, mDelta{delta} {}
+        : Task{sizeX, sizeY, vectorSize, false, nullptr}, mBuffer{buffer}, mDelta{delta} {}
 };
 
 /**

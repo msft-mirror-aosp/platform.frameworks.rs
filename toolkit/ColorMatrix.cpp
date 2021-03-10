@@ -14,18 +14,17 @@
  * limitations under the License.
  */
 
+#include "RenderScriptToolkit.h"
+#include "TaskProcessor.h"
+#include "Utils.h"
+#include <assert.h>
+#include <cstdint>
 #include <sys/mman.h>
-#include <unistd.h>
 
-#include "rsCpuIntrinsic.h"
-#include "rsCpuIntrinsicInlines.h"
+namespace android {
+namespace renderscript {
 
-#include <sys/mman.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdlib.h>
-//#include <utils/StopWatch.h>
-
+#define LOG_TAG "renderscript.toolkit.ColorMatrix"
 
 /*  uint kernel
  *  Q0  D0:  Load slot for R
@@ -99,11 +98,6 @@
  *
  */
 
-
-
-namespace android {
-namespace renderscript {
-
 typedef union {
     uint64_t key;
     struct {
@@ -119,6 +113,15 @@ typedef union {
         uint32_t addMask            :4;  // [32-35]
     } u;
 } Key_t;
+
+/* The two data types and their value, as specified in the RenderScript documentation.
+ * Only RS_TYPE_UNSIGNED_8 is currently supported.
+ *
+ * TODO: The actual values of these constants are likely not important. We may be
+ * able to simplify the key related code.
+ */
+const int RS_TYPE_UNSIGNED_8 = 8;
+const int RS_TYPE_FLOAT_32 = 2;
 
 //Re-enable when intrinsic is fixed
 #if defined(ARCH_ARM64_USE_INTRINSICS)
@@ -155,54 +158,83 @@ extern "C" void rsdIntrinsicColorMatrixSetup_float_K(
              uint32_t mask, int dt, int st);
 #endif
 
-class RsdCpuScriptIntrinsicColorMatrix : public RsdCpuScriptIntrinsic {
-public:
-    void populateScript(Script *) override;
+class ColorMatrixTask : public Task {
+    const void* mIn;
+    void* mOut;
+    size_t mInputVectorSize;
+    uint32_t mOutstep;
+    uint32_t mInstep;
 
-    void setGlobalVar(uint32_t slot, const void *data, size_t dataLength) override;
-
-    ~RsdCpuScriptIntrinsicColorMatrix() override;
-    RsdCpuScriptIntrinsicColorMatrix(RsdCpuReferenceImpl *ctx, const Script *s, const Element *e);
-
-    void preLaunch(uint32_t slot, const Allocation ** ains,
-                   uint32_t inLen, Allocation * aout, const void * usr,
-                   uint32_t usrLen, const RsScriptCall *sc) override;
-
-protected:
-    float fp[16];
-    float fpa[4];
+    float mFp[16];
+    float mFpa[4];
 
     // The following four fields are read as constants
     // by the SIMD assembly code.
-    int16_t ip[16];
-    int ipa[4];
-    float tmpFp[16];
-    float tmpFpa[4];
+    int16_t mIp[16];
+    int mIpa[4];
+    float mTmpFp[16];
+    float mTmpFpa[4];
 #if defined(ARCH_ARM64_USE_INTRINSICS)
     FunctionTab_t mFnTab;
 #endif
 
-    static void kernel(const RsExpandKernelDriverInfo *info,
-                       uint32_t xstart, uint32_t xend,
-                       uint32_t outstep);
+    void kernel(uchar* out, uchar* in, uint32_t xstart, uint32_t xend);
     void updateCoeffCache(float fpMul, float addMul);
 
     Key_t mLastKey;
-    unsigned char *mBuf;
+    unsigned char* mBuf;
     size_t mBufSize;
 
-    Key_t computeKey(const Element *ein, const Element *eout);
-
     bool build(Key_t key);
+    void (*mOptKernel)(void* dst, const void* src, const int16_t* coef, uint32_t count);
 
-    void (*mOptKernel)(void *dst, const void *src, const int16_t *coef, uint32_t count);
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_SUPPORTS_FLOAT
+    Key_t computeKey(size_t inVectorSize, int inType, size_t outVectorSize, int outType);
+    void preLaunch(size_t inVectorSize, int inType, size_t outVectorSize, int outType);
+#else
+    Key_t computeKey(size_t inVectorSize, size_t outVectorSize);
+    void preLaunch(size_t inVectorSize, size_t outVectorSize);
+#endif  // ANDROID_RENDERSCRIPT_TOOLKIT_SUPPORTS_FLOAT
 
+    // Process a 2D tile of the overall work. threadIndex identifies which thread does the work.
+    virtual void processData(int threadIndex, size_t startX, size_t startY, size_t endX,
+                             size_t endY) override;
+
+   public:
+    ColorMatrixTask(const void* in, void* out, size_t inputVectorSize, size_t outputVectorSize,
+                    size_t sizeX, size_t sizeY, const float* matrix, const float* addVector,
+                    const Restriction* restriction)
+        : Task{sizeX, sizeY, outputVectorSize, true, restriction},
+          mIn{in},
+          mOut{out},
+          mInputVectorSize{inputVectorSize} {
+        mLastKey.key = 0;
+        mBuf = nullptr;
+        mBufSize = 0;
+        mOptKernel = nullptr;
+
+        mOutstep = paddedSize(outputVectorSize);
+        mInstep = paddedSize(inputVectorSize);
+
+        memcpy(mFp, matrix, sizeof(mFp));
+        memcpy(mFpa, addVector, sizeof(mFpa));
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_SUPPORTS_FLOAT
+        // For float support, we'll have to pass the type in the constructor too.
+        preLaunch(inputVectorSize, RS_TYPE_UNSIGNED_8, outputVectorSize, RS_TYPE_UNSIGNED_8);
+#else
+        preLaunch(inputVectorSize, outputVectorSize);
+#endif  // ANDROID_RENDERSCRIPT_TOOLKIT_SUPPORTS_FLOAT
+    }
+    ~ColorMatrixTask() {
+        if (mBuf) munmap(mBuf, mBufSize);
+        mBuf = nullptr;
+        mOptKernel = nullptr;
+    }
 };
 
-
-Key_t RsdCpuScriptIntrinsicColorMatrix::computeKey(
-        const Element *ein, const Element *eout) {
-
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_SUPPORTS_FLOAT
+Key_t ColorMatrixTask::computeKey(size_t inVectorSize, int inType, size_t outVectorSize,
+                                  int outType) {
     Key_t key;
     key.key = 0;
 
@@ -210,59 +242,66 @@ Key_t RsdCpuScriptIntrinsicColorMatrix::computeKey(
 
     // Add to the key the input and output types
     bool hasFloat = false;
-    if (ein->getType() == RS_TYPE_FLOAT_32) {
+    if (inType == RS_TYPE_FLOAT_32) {
         hasFloat = true;
         key.u.inType = RS_TYPE_FLOAT_32;
-        rsAssert(key.u.inType == RS_TYPE_FLOAT_32);
     }
-    if (eout->getType() == RS_TYPE_FLOAT_32) {
+    if (outType == RS_TYPE_FLOAT_32) {
         hasFloat = true;
         key.u.outType = RS_TYPE_FLOAT_32;
-        rsAssert(key.u.outType == RS_TYPE_FLOAT_32);
     }
 
     // Mask in the bits indicating which coefficients in the
     // color matrix are needed.
     if (hasFloat) {
         for (uint32_t i=0; i < 16; i++) {
-            if (fabs(fp[i]) != 0.f) {
+            if (fabs(mFp[i]) != 0.f) {
                 key.u.coeffMask |= 1 << i;
             }
         }
-        if (fabs(fpa[0]) != 0.f) key.u.addMask |= 0x1;
-        if (fabs(fpa[1]) != 0.f) key.u.addMask |= 0x2;
-        if (fabs(fpa[2]) != 0.f) key.u.addMask |= 0x4;
-        if (fabs(fpa[3]) != 0.f) key.u.addMask |= 0x8;
+        if (fabs(mFpa[0]) != 0.f) key.u.addMask |= 0x1;
+        if (fabs(mFpa[1]) != 0.f) key.u.addMask |= 0x2;
+        if (fabs(mFpa[2]) != 0.f) key.u.addMask |= 0x4;
+        if (fabs(mFpa[3]) != 0.f) key.u.addMask |= 0x8;
 
     } else {
+#else
+Key_t ColorMatrixTask::computeKey(size_t inVectorSize, size_t outVectorSize) {
+    Key_t key;
+    key.key = 0;
+
+    // Compute a unique code key for this operation
+    {
+#endif // ANDROID_RENDERSCRIPT_TOOLKIT_SUPPORTS_FLOAT
+
         for (uint32_t i=0; i < 16; i++) {
-            if (ip[i] != 0) {
+            if (mIp[i] != 0) {
                 key.u.coeffMask |= 1 << i;
             }
         }
-        if (ipa[0] != 0) key.u.addMask |= 0x1;
-        if (ipa[1] != 0) key.u.addMask |= 0x2;
-        if (ipa[2] != 0) key.u.addMask |= 0x4;
-        if (ipa[3] != 0) key.u.addMask |= 0x8;
+        if (mIpa[0] != 0) key.u.addMask |= 0x1;
+        if (mIpa[1] != 0) key.u.addMask |= 0x2;
+        if (mIpa[2] != 0) key.u.addMask |= 0x4;
+        if (mIpa[3] != 0) key.u.addMask |= 0x8;
     }
 
     // Look for a dot product where the r,g,b colums are the same
-    if ((ip[0] == ip[1]) && (ip[0] == ip[2]) &&
-        (ip[4] == ip[5]) && (ip[4] == ip[6]) &&
-        (ip[8] == ip[9]) && (ip[8] == ip[10]) &&
-        (ip[12] == ip[13]) && (ip[12] == ip[14])) {
+    if ((mIp[0] == mIp[1]) && (mIp[0] == mIp[2]) &&
+        (mIp[4] == mIp[5]) && (mIp[4] == mIp[6]) &&
+        (mIp[8] == mIp[9]) && (mIp[8] == mIp[10]) &&
+        (mIp[12] == mIp[13]) && (mIp[12] == mIp[14])) {
 
         if (!key.u.addMask) key.u.dot = 1;
     }
 
     // Is alpha a simple copy
-    if (!(key.u.coeffMask & 0x0888) && (ip[15] == 256) && !(key.u.addMask & 0x8)) {
+    if (!(key.u.coeffMask & 0x0888) && (mIp[15] == 256) && !(key.u.addMask & 0x8)) {
         key.u.copyAlpha = !(key.u.inType || key.u.outType);
     }
 
     //ALOGE("build key %08x, %08x", (int32_t)(key.key >> 32), (int32_t)key.key);
 
-    switch (ein->getVectorSize()) {
+    switch (inVectorSize) {
     case 4:
         key.u.inVecSize = 3;
         break;
@@ -279,7 +318,7 @@ Key_t RsdCpuScriptIntrinsicColorMatrix::computeKey(
         break;
     }
 
-    switch (eout->getVectorSize()) {
+    switch (outVectorSize) {
     case 4:
         key.u.outVecSize = 3;
         break;
@@ -309,9 +348,6 @@ Key_t RsdCpuScriptIntrinsicColorMatrix::computeKey(
     //ALOGE("build key %08x, %08x", (int32_t)(key.key >> 32), (int32_t)key.key);
     return key;
 }
-
-} // namespace renderscript
-} // namespace android
 
 #if defined(ARCH_ARM_USE_INTRINSICS) && !defined(ARCH_ARM64_USE_INTRINSICS)
 
@@ -370,7 +406,7 @@ DEF_SYM(add_3_u8)
 
 static uint8_t * addBranch(uint8_t *buf, const uint8_t *target, uint32_t condition) {
     size_t off = (target - buf - 8) >> 2;
-    rsAssert(((off & 0xff000000) == 0) ||
+    assert(((off & 0xff000000) == 0) ||
            ((off & 0xff000000) == 0xff000000));
 
     uint32_t op = (condition << 28);
@@ -381,9 +417,9 @@ static uint8_t * addBranch(uint8_t *buf, const uint8_t *target, uint32_t conditi
 }
 
 static uint32_t encodeSIMDRegs(uint32_t vd, uint32_t vn, uint32_t vm) {
-    rsAssert(vd < 32);
-    rsAssert(vm < 32);
-    rsAssert(vn < 32);
+    assert(vd < 32);
+    assert(vm < 32);
+    assert(vn < 32);
 
     uint32_t op = ((vd & 0xf) << 12) | (((vd & 0x10) >> 4) << 22);
     op |= (vm & 0xf) | (((vm & 0x10) >> 4) << 5);
@@ -439,7 +475,7 @@ static uint8_t * addVORR_32(uint8_t *buf, uint32_t dest_q, uint32_t src_q1, uint
 
 static uint8_t * addVMOV_32(uint8_t *buf, uint32_t dest_q, uint32_t imm) {
     //vmov.32 Q#1, #imm
-    rsAssert(imm == 0);
+    assert(imm == 0);
     uint32_t op = 0xf2800050 | encodeSIMDRegs(dest_q << 1, 0, 0);
     ((uint32_t *)buf)[0] = op;
     return buf + 4;
@@ -481,10 +517,7 @@ void * selectKernel(Key_t key)
 }
 #endif
 
-namespace android {
-namespace renderscript {
-
-bool RsdCpuScriptIntrinsicColorMatrix::build(Key_t key) {
+bool ColorMatrixTask::build(Key_t key) {
 #if defined(ARCH_ARM_USE_INTRINSICS) && !defined(ARCH_ARM64_USE_INTRINSICS)
     mBufSize = 4096;
     //StopWatch build_time("rs cm: build time");
@@ -742,47 +775,33 @@ bool RsdCpuScriptIntrinsicColorMatrix::build(Key_t key) {
     __builtin___clear_cache((char *) mBuf, (char*) mBuf + mBufSize);
     return true;
 #else
+    (void) key; // Avoid unused parameter warning.
     return false;
 #endif
 }
 
-void RsdCpuScriptIntrinsicColorMatrix::updateCoeffCache(float fpMul, float addMul) {
+void ColorMatrixTask::updateCoeffCache(float fpMul, float addMul) {
     for(int ct=0; ct < 16; ct++) {
-        ip[ct] = (int16_t)(fp[ct] * 256.f + 0.5f);
-        tmpFp[ct] = fp[ct] * fpMul;
-        //ALOGE("mat %i %f  %f", ct, fp[ct], tmpFp[ct]);
+        mIp[ct] = (int16_t)(mFp[ct] * 256.f + 0.5f);
+        mTmpFp[ct] = mFp[ct] * fpMul;
+        //ALOGE("mat %i %f  %f", ct, mFp[ct], tmpFp[ct]);
     }
 
     float add = 0.f;
     if (fpMul > 254.f) add = 0.5f;
     for(int ct=0; ct < 4; ct++) {
-        tmpFpa[ct] = fpa[ct] * addMul + add;
-        //ALOGE("fpa %i %f  %f", ct, fpa[ct], tmpFpa[ct * 4 + 0]);
+        mTmpFpa[ct] = mFpa[ct] * addMul + add;
+        //ALOGE("mFpa %i %f  %f", ct, mFpa[ct], tmpFpa[ct * 4 + 0]);
     }
 
     for(int ct=0; ct < 4; ct++) {
-        ipa[ct] = (int)(fpa[ct] * 65536.f + 0.5f);
+        mIpa[ct] = (int)(mFpa[ct] * 65536.f + 0.5f);
     }
 }
 
-void RsdCpuScriptIntrinsicColorMatrix::setGlobalVar(uint32_t slot, const void *data,
-                                                    size_t dataLength) {
-    switch(slot) {
-    case 0:
-        memcpy (fp, data, sizeof(fp));
-        break;
-    case 1:
-        memcpy (fpa, data, sizeof(fpa));
-        break;
-    default:
-        rsAssert(0);
-        break;
-    }
-    mRootPtr = &kernel;
-}
 
 
-static void One(const RsExpandKernelDriverInfo *info, void *out,
+static void One(void *out,
                 const void *py, const float* coeff, const float *add,
                 uint32_t vsin, uint32_t vsout, bool fin, bool fout) {
 
@@ -806,14 +825,14 @@ static void One(const RsExpandKernelDriverInfo *info, void *out,
     } else {
         switch(vsin) {
         case 3:
-            f = convert_float4(((const uchar4 *)py)[0]);
+            f = convert<float4>(((const uchar4 *)py)[0]);
             break;
         case 2:
-            f = convert_float4(((const uchar4 *)py)[0]);
+            f = convert<float4>(((const uchar4 *)py)[0]);
             f.w = 0.f;
             break;
         case 1:
-            f.xy = convert_float2(((const uchar2 *)py)[0]);
+            f.xy = convert<float2>(((const uchar2 *)py)[0]);
             break;
         case 0:
             f.x = (float)(((const uchar *)py)[0]);
@@ -870,10 +889,10 @@ static void One(const RsExpandKernelDriverInfo *info, void *out,
         switch(vsout) {
         case 3:
         case 2:
-            ((uchar4 *)out)[0] = convert_uchar4(sum);
+            ((uchar4 *)out)[0] = convert<uchar4>(sum);
             break;
         case 1:
-            ((uchar2 *)out)[0] = convert_uchar2(sum.xy);
+            ((uchar2 *)out)[0] = convert<uchar2>(sum.xy);
             break;
         case 0:
             ((uchar *)out)[0] = sum.x;
@@ -884,94 +903,83 @@ static void One(const RsExpandKernelDriverInfo *info, void *out,
     //      ((float *)out)[3]);
 }
 
-void RsdCpuScriptIntrinsicColorMatrix::kernel(const RsExpandKernelDriverInfo *info,
-                                              uint32_t xstart, uint32_t xend,
-                                              uint32_t outstep) {
-    RsdCpuScriptIntrinsicColorMatrix *cp = (RsdCpuScriptIntrinsicColorMatrix *)info->usr;
-
-    uint32_t instep = info->inStride[0];
-
-    uchar *out = (uchar *)info->outPtr[0];
-    uchar *in = (uchar *)info->inPtr[0];
+void ColorMatrixTask::kernel(uchar *out, uchar *in, uint32_t xstart, uint32_t xend) {
     uint32_t x1 = xstart;
     uint32_t x2 = xend;
 
-    uint32_t vsin = cp->mLastKey.u.inVecSize;
-    uint32_t vsout = cp->mLastKey.u.outVecSize;
-    bool floatIn = !!cp->mLastKey.u.inType;
-    bool floatOut = !!cp->mLastKey.u.outType;
+    uint32_t vsin = mLastKey.u.inVecSize;
+    uint32_t vsout = mLastKey.u.outVecSize;
+    bool floatIn = !!mLastKey.u.inType;
+    bool floatOut = !!mLastKey.u.outType;
 
     //if (!info->current.y) ALOGE("steps %i %i   %i %i", instep, outstep, vsin, vsout);
 
     if(x2 > x1) {
         int32_t len = x2 - x1;
-        if (gArchUseSIMD) {
-            if((cp->mOptKernel != nullptr) && (len >= 4)) {
+        if (mUsesSimd) {
+            if((mOptKernel != nullptr) && (len >= 4)) {
                 // The optimized kernel processes 4 pixels at once
                 // and requires a minimum of 1 chunk of 4
-                cp->mOptKernel(out, in, cp->ip, len >> 2);
+                mOptKernel(out, in, mIp, len >> 2);
                 // Update the len and pointers so the generic code can
                 // finish any leftover pixels
                 len &= ~3;
                 x1 += len;
-                out += outstep * len;
-                in += instep * len;
+                out += mOutstep * len;
+                in += mInstep * len;
             }
 #if defined(ARCH_ARM64_USE_INTRINSICS)
             else {
-                if (cp->mLastKey.u.inType == RS_TYPE_FLOAT_32 ||
-                    cp->mLastKey.u.outType == RS_TYPE_FLOAT_32) {
+                if (mLastKey.u.inType == RS_TYPE_FLOAT_32 ||
+                    mLastKey.u.outType == RS_TYPE_FLOAT_32) {
                     // Currently this generates off by one errors.
-                    //rsdIntrinsicColorMatrix_float_K(out, in, len, &cp->mFnTab, cp->tmpFp,
-                    //                                cp->tmpFpa);
-                    //x1 += len;
-                    //out += outstep * len;
-                    //in += instep * len;
+                    // rsdIntrinsicColorMatrix_float_K(out, in, len, &mFnTab, tmpFp, tmpFpa);
+                    // x1 += len;
+                    // out += outstep * len;
+                    // in += instep * len;
                 } else {
-                    rsdIntrinsicColorMatrix_int_K(out, in, len, &cp->mFnTab, cp->ip, cp->ipa);
+                    rsdIntrinsicColorMatrix_int_K(out, in, len, &mFnTab, mIp, mIpa);
                     x1 += len;
-                    out += outstep * len;
-                    in += instep * len;
+                    out += mOutstep * len;
+                    in += mInstep * len;
                 }
             }
 #endif
         }
 
         while(x1 != x2) {
-            One(info, out, in, cp->tmpFp, cp->tmpFpa, vsin, vsout, floatIn, floatOut);
-            out += outstep;
-            in += instep;
+            One(out, in, mTmpFp, mTmpFpa, vsin, vsout, floatIn, floatOut);
+            out += mOutstep;
+            in += mInstep;
             x1++;
         }
     }
 }
 
-void RsdCpuScriptIntrinsicColorMatrix::preLaunch(uint32_t slot,
-                                                 const Allocation ** ains,
-                                                 uint32_t inLen,
-                                                 Allocation * aout,
-                                                 const void * usr,
-                                                 uint32_t usrLen,
-                                                 const RsScriptCall *sc) {
-
-    const Element *ein = ains[0]->mHal.state.type->getElement();
-    const Element *eout = aout->mHal.state.type->getElement();
-
-    if (ein->getType() == eout->getType()) {
-        if (eout->getType() == RS_TYPE_UNSIGNED_8) {
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_SUPPORTS_FLOAT
+void ColorMatrixTask::preLaunch(size_t inVectorSize, int inType, size_t outVectorSize,
+                                int outType) {
+    if (inType == outType) {
+        if (outType == RS_TYPE_UNSIGNED_8) {
             updateCoeffCache(1.f, 255.f);
         } else {
             updateCoeffCache(1.f, 1.f);
         }
     } else {
-        if (eout->getType() == RS_TYPE_UNSIGNED_8) {
+        if (outType == RS_TYPE_UNSIGNED_8) {
             updateCoeffCache(255.f, 255.f);
         } else {
             updateCoeffCache(1.f / 255.f, 1.f);
         }
     }
 
-    Key_t key = computeKey(ein, eout);
+    Key_t key = computeKey(inVectorSize, inType, outVectorSize, outType);
+#else
+void ColorMatrixTask::preLaunch(size_t inVectorSize, size_t outVectorSize) {
+    updateCoeffCache(1.f, 255.f);
+
+    Key_t key = computeKey(inVectorSize, outVectorSize);
+#endif // ANDROID_RENDERSCRIPT_TOOLKIT_SUPPORTS_FLOAT
 
 #if defined(ARCH_X86_HAVE_SSSE3)
     if ((mOptKernel == nullptr) || (mLastKey.key != key.key)) {
@@ -1015,40 +1023,43 @@ void RsdCpuScriptIntrinsicColorMatrix::preLaunch(uint32_t slot,
 #endif //if !defined(ARCH_X86_HAVE_SSSE3)
 }
 
-RsdCpuScriptIntrinsicColorMatrix::RsdCpuScriptIntrinsicColorMatrix(
-            RsdCpuReferenceImpl *ctx, const Script *s, const Element *e)
-            : RsdCpuScriptIntrinsic(ctx, s, e, RS_SCRIPT_INTRINSIC_ID_COLOR_MATRIX) {
-
-    mLastKey.key = 0;
-    mBuf = nullptr;
-    mBufSize = 0;
-    mOptKernel = nullptr;
-    const static float defaultMatrix[] = {
-        1.f, 0.f, 0.f, 0.f,
-        0.f, 1.f, 0.f, 0.f,
-        0.f, 0.f, 1.f, 0.f,
-        0.f, 0.f, 0.f, 1.f
-    };
-    const static float defaultAdd[] = {0.f, 0.f, 0.f, 0.f};
-    setGlobalVar(0, defaultMatrix, sizeof(defaultMatrix));
-    setGlobalVar(1, defaultAdd, sizeof(defaultAdd));
+void ColorMatrixTask::processData(int /* threadIndex */, size_t startX, size_t startY, size_t endX,
+                                  size_t endY) {
+    for (size_t y = startY; y < endY; y++) {
+        size_t offset = mSizeX * y + startX;
+        uchar* in = ((uchar*)mIn) + offset * paddedSize(mInputVectorSize);
+        uchar* out = ((uchar*)mOut) + offset * paddedSize(mVectorSize);
+        kernel(out, in, startX, endX);
+    }
 }
 
-RsdCpuScriptIntrinsicColorMatrix::~RsdCpuScriptIntrinsicColorMatrix() {
-    if (mBuf) munmap(mBuf, mBufSize);
-    mBuf = nullptr;
-    mOptKernel = nullptr;
+static const float fourZeroes[]{0.0f, 0.0f, 0.0f, 0.0f};
+
+void RenderScriptToolkit::colorMatrix(const void* in, void* out, size_t inputVectorSize,
+                                      size_t outputVectorSize, size_t sizeX, size_t sizeY,
+                                      const float* matrix, const float* addVector,
+                                      const Restriction* restriction) {
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_VALIDATE
+    if (!validRestriction(LOG_TAG, sizeX, sizeY, restriction)) {
+        return;
+    }
+    if (inputVectorSize < 1 || inputVectorSize > 4) {
+        ALOGE("The inputVectorSize should be between 1 and 4. %zu provided.", inputVectorSize);
+        return;
+    }
+    if (outputVectorSize < 1 || outputVectorSize > 4) {
+        ALOGE("The outputVectorSize should be between 1 and 4. %zu provided.", outputVectorSize);
+        return;
+    }
+#endif
+
+    if (addVector == nullptr) {
+        addVector = fourZeroes;
+    }
+    ColorMatrixTask task(in, out, inputVectorSize, outputVectorSize, sizeX, sizeY, matrix,
+                         addVector, restriction);
+    processor->doTask(&task);
 }
 
-void RsdCpuScriptIntrinsicColorMatrix::populateScript(Script *s) {
-    s->mHal.info.exportedVariableCount = 2;
-}
-
-RsdCpuScriptImpl * rsdIntrinsic_ColorMatrix(RsdCpuReferenceImpl *ctx,
-                                            const Script *s, const Element *e) {
-
-    return new RsdCpuScriptIntrinsicColorMatrix(ctx, s, e);
-}
-
-} // namespace renderscript
-} // namespace android
+}  // namespace renderscript
+}  // namespace android

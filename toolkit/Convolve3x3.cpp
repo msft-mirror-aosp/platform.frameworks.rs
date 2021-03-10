@@ -14,492 +14,251 @@
  * limitations under the License.
  */
 
+#include <cstdint>
 
-#include "rsCpuIntrinsic.h"
-#include "rsCpuIntrinsicInlines.h"
+#include "RenderScriptToolkit.h"
+#include "TaskProcessor.h"
+#include "Utils.h"
+
+#define LOG_TAG "renderscript.toolkit.Convolve3x3"
 
 namespace android {
 namespace renderscript {
 
+extern "C" void rsdIntrinsicConvolve3x3_K(void* dst, const void* y0, const void* y1, const void* y2,
+                                          const int16_t* coef, uint32_t count);
 
-class RsdCpuScriptIntrinsicConvolve3x3 : public RsdCpuScriptIntrinsic {
-public:
-    void populateScript(Script *) override;
-    void invokeFreeChildren() override;
-
-    void setGlobalVar(uint32_t slot, const void *data, size_t dataLength) override;
-    void setGlobalObj(uint32_t slot, ObjectBase *data) override;
-
-    ~RsdCpuScriptIntrinsicConvolve3x3() override;
-    RsdCpuScriptIntrinsicConvolve3x3(RsdCpuReferenceImpl *ctx, const Script *s, const Element *);
-
-protected:
+class Convolve3x3Task : public Task {
+    const void* mIn;
+    void* mOut;
+    // Even though we have exactly 9 coefficients, store them in an array of size 16 so that
+    // the SIMD instructions can load them in chunks multiple of 8.
     float mFp[16];
     int16_t mIp[16];
-    ObjectBaseRef<const Allocation> mAlloc;
-    ObjectBaseRef<const Element> mElement;
 
-    static void kernelU1(const RsExpandKernelDriverInfo *info,
-                         uint32_t xstart, uint32_t xend,
-                         uint32_t outstep);
-    static void kernelU2(const RsExpandKernelDriverInfo *info,
-                         uint32_t xstart, uint32_t xend,
-                         uint32_t outstep);
-    static void kernelU4(const RsExpandKernelDriverInfo *info,
-                         uint32_t xstart, uint32_t xend,
-                         uint32_t outstep);
-    static void kernelF1(const RsExpandKernelDriverInfo *info,
-                         uint32_t xstart, uint32_t xend,
-                         uint32_t outstep);
-    static void kernelF2(const RsExpandKernelDriverInfo *info,
-                         uint32_t xstart, uint32_t xend,
-                         uint32_t outstep);
-    static void kernelF4(const RsExpandKernelDriverInfo *info,
-                         uint32_t xstart, uint32_t xend,
-                         uint32_t outstep);
-};
+    void kernelU4(uchar* out, uint32_t xstart, uint32_t xend, const uchar* py0, const uchar* py1,
+                  const uchar* py2);
+    void convolveU4(const uchar* pin, uchar* pout, size_t vectorSize, size_t sizeX, size_t sizeY,
+                    size_t startX, size_t startY, size_t endX, size_t endY);
 
-void RsdCpuScriptIntrinsicConvolve3x3::setGlobalObj(uint32_t slot, ObjectBase *data) {
-    rsAssert(slot == 1);
-    mAlloc.set(static_cast<Allocation *>(data));
-}
+    // Process a 2D tile of the overall work. threadIndex identifies which thread does the work.
+    virtual void processData(int threadIndex, size_t startX, size_t startY, size_t endX,
+                             size_t endY) override;
 
-void RsdCpuScriptIntrinsicConvolve3x3::setGlobalVar(uint32_t slot, const void *data,
-                                                    size_t dataLength) {
-    rsAssert(slot == 0);
-    memcpy (&mFp, data, dataLength);
-    for(int ct=0; ct < 9; ct++) {
-        if (mFp[ct] >= 0) {
-            mIp[ct] = (int16_t)(mFp[ct] * 256.f + 0.5f);
-        } else {
-            mIp[ct] = (int16_t)(mFp[ct] * 256.f - 0.5f);
+   public:
+    Convolve3x3Task(const void* in, void* out, size_t vectorSize, size_t sizeX, size_t sizeY,
+                    const float* coefficients, const Restriction* restriction)
+        : Task{sizeX, sizeY, vectorSize, false, restriction}, mIn{in}, mOut{out} {
+        for (int ct = 0; ct < 9; ct++) {
+            mFp[ct] = coefficients[ct];
+            if (mFp[ct] >= 0) {
+                mIp[ct] = (int16_t)(mFp[ct] * 256.f + 0.5f);
+            } else {
+                mIp[ct] = (int16_t)(mFp[ct] * 256.f - 0.5f);
+            }
         }
     }
-}
+};
 
-extern "C" void rsdIntrinsicConvolve3x3_K(void *dst, const void *y0, const void *y1,
-                                          const void *y2, const int16_t *coef, uint32_t count);
+/**
+ * Computes one convolution and stores the result in the output. This is used for uchar, uchar2,
+ * uchar3, and uchar4 vectors.
+ *
+ * @tparam InputOutputType Type of the input and output arrays. A vector type, e.g. uchar4.
+ * @tparam ComputationType Type we use for the intermediate computations.
+ * @param x The index in the row of the value we'll convolve.
+ * @param out The location in the output array where we store the value.
+ * @param py0 The start of the top row.
+ * @param py1 The start of the middle row.
+ * @param py2 The start of the bottom row.
+ * @param coeff Pointer to the float coefficients, in row major format.
+ * @param sizeX The number of cells of one row.
+ */
+template <typename InputOutputType, typename ComputationType>
+static void convolveOneU(uint32_t x, InputOutputType* out, const InputOutputType* py0,
+                         const InputOutputType* py1, const InputOutputType* py2, const float* coeff,
+                         int32_t sizeX) {
+    uint32_t x1 = std::max((int32_t)x - 1, 0);
+    uint32_t x2 = std::min((int32_t)x + 1, sizeX - 1);
 
-
-static void ConvolveOneU4(const RsExpandKernelDriverInfo *info, uint32_t x, uchar4 *out,
-                          const uchar4 *py0, const uchar4 *py1, const uchar4 *py2,
-                          const float* coeff) {
-
-    uint32_t x1 = rsMax((int32_t)x-1, 0);
-    uint32_t x2 = rsMin((int32_t)x+1, (int32_t)info->dim.x-1);
-
-    float4 px = convert_float4(py0[x1]) * coeff[0] +
-                convert_float4(py0[x]) * coeff[1] +
-                convert_float4(py0[x2]) * coeff[2] +
-                convert_float4(py1[x1]) * coeff[3] +
-                convert_float4(py1[x]) * coeff[4] +
-                convert_float4(py1[x2]) * coeff[5] +
-                convert_float4(py2[x1]) * coeff[6] +
-                convert_float4(py2[x]) * coeff[7] +
-                convert_float4(py2[x2]) * coeff[8];
-
-    px = clamp(px + 0.5f, 0.f, 255.f);
-    uchar4 o = {(uchar)px.x, (uchar)px.y, (uchar)px.z, (uchar)px.w};
-    *out = o;
-}
-
-static void ConvolveOneU2(const RsExpandKernelDriverInfo *info, uint32_t x, uchar2 *out,
-                          const uchar2 *py0, const uchar2 *py1, const uchar2 *py2,
-                          const float* coeff) {
-
-    uint32_t x1 = rsMax((int32_t)x-1, 0);
-    uint32_t x2 = rsMin((int32_t)x+1, (int32_t)info->dim.x-1);
-
-    float2 px = convert_float2(py0[x1]) * coeff[0] +
-                convert_float2(py0[x]) * coeff[1] +
-                convert_float2(py0[x2]) * coeff[2] +
-                convert_float2(py1[x1]) * coeff[3] +
-                convert_float2(py1[x]) * coeff[4] +
-                convert_float2(py1[x2]) * coeff[5] +
-                convert_float2(py2[x1]) * coeff[6] +
-                convert_float2(py2[x]) * coeff[7] +
-                convert_float2(py2[x2]) * coeff[8];
+    ComputationType px = convert<ComputationType>(py0[x1]) * coeff[0] +
+                         convert<ComputationType>(py0[x]) * coeff[1] +
+                         convert<ComputationType>(py0[x2]) * coeff[2] +
+                         convert<ComputationType>(py1[x1]) * coeff[3] +
+                         convert<ComputationType>(py1[x]) * coeff[4] +
+                         convert<ComputationType>(py1[x2]) * coeff[5] +
+                         convert<ComputationType>(py2[x1]) * coeff[6] +
+                         convert<ComputationType>(py2[x]) * coeff[7] +
+                         convert<ComputationType>(py2[x2]) * coeff[8];
 
     px = clamp(px + 0.5f, 0.f, 255.f);
-    *out = convert_uchar2(px);
+    *out = convert<InputOutputType>(px);
 }
 
-static void ConvolveOneU1(const RsExpandKernelDriverInfo *info, uint32_t x, uchar *out,
-                          const uchar *py0, const uchar *py1, const uchar *py2,
-                          const float* coeff) {
-
-    uint32_t x1 = rsMax((int32_t)x-1, 0);
-    uint32_t x2 = rsMin((int32_t)x+1, (int32_t)info->dim.x-1);
-
-    float px = ((float)py0[x1]) * coeff[0] +
-               ((float)py0[x]) * coeff[1] +
-               ((float)py0[x2]) * coeff[2] +
-               ((float)py1[x1]) * coeff[3] +
-               ((float)py1[x]) * coeff[4] +
-               ((float)py1[x2]) * coeff[5] +
-               ((float)py2[x1]) * coeff[6] +
-               ((float)py2[x]) * coeff[7] +
-               ((float)py2[x2]) * coeff[8];
-    *out = clamp(px + 0.5f, 0.f, 255.f);
-}
-
-static void ConvolveOneF4(const RsExpandKernelDriverInfo *info, uint32_t x, float4 *out,
-                          const float4 *py0, const float4 *py1, const float4 *py2,
-                          const float* coeff) {
-
-    uint32_t x1 = rsMax((int32_t)x-1, 0);
-    uint32_t x2 = rsMin((int32_t)x+1, (int32_t)info->dim.x-1);
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_SUPPORTS_FLOAT
+/**
+ * Computes one convolution and stores the result in the output. This is used for float, float2,
+ * float3, and float4 vectors.
+ *
+ * @tparam InputOutputType Type of the input and output arrays. A vector type, e.g. float4.
+ * @param x The index in the row of the value we'll convolve.
+ * @param out The location in the output array where we store the value.
+ * @param py0 The start of the top row.
+ * @param py1 The start of the middle row.
+ * @param py2 The start of the bottom row.
+ * @param coeff Pointer to the float coefficients, in row major format.
+ * @param sizeX The number of cells of one row.
+ */
+template <typename InputOutputType>
+static void ConvolveOneF(uint32_t x, InputOutputType* out, const InputOutputType* py0,
+                         const InputOutputType* py1, const InputOutputType* py2, const float* coeff,
+                         int32_t sizeX) {
+    uint32_t x1 = std::max((int32_t)x - 1, 0);
+    uint32_t x2 = std::min((int32_t)x + 1, sizeX - 1);
     *out = (py0[x1] * coeff[0]) + (py0[x] * coeff[1]) + (py0[x2] * coeff[2]) +
            (py1[x1] * coeff[3]) + (py1[x] * coeff[4]) + (py1[x2] * coeff[5]) +
            (py2[x1] * coeff[6]) + (py2[x] * coeff[7]) + (py2[x2] * coeff[8]);
 }
+#endif  // ANDROID_RENDERSCRIPT_TOOLKIT_SUPPORTS_FLOAT
 
-static void ConvolveOneF2(const RsExpandKernelDriverInfo *info, uint32_t x, float2 *out,
-                          const float2 *py0, const float2 *py1, const float2 *py2,
-                          const float* coeff) {
+/**
+ * This function convolves one line.
+ *
+ * @param pout Where to place the next output.
+ * @param xstart Index in the X direction of where to start.
+ * @param xend End index
+ * @param ppy0 Points to the start of the previous line.
+ * @param ppy1 Points to the start of the current line.
+ * @param ppy2 Points to the start of the next line.
+ */
+void Convolve3x3Task::kernelU4(uchar* pout, uint32_t xstart, uint32_t xend, const uchar* ppy0,
+                               const uchar* ppy1, const uchar* ppy2) {
+    uchar4* out = (uchar4*)pout;
+    const uchar4* py0 = (const uchar4*)ppy0;
+    const uchar4* py1 = (const uchar4*)ppy1;
+    const uchar4* py2 = (const uchar4*)ppy2;
 
-    uint32_t x1 = rsMax((int32_t)x-1, 0);
-    uint32_t x2 = rsMin((int32_t)x+1, (int32_t)info->dim.x-1);
-    *out = (py0[x1] * coeff[0]) + (py0[x] * coeff[1]) + (py0[x2] * coeff[2]) +
-           (py1[x1] * coeff[3]) + (py1[x] * coeff[4]) + (py1[x2] * coeff[5]) +
-           (py2[x1] * coeff[6]) + (py2[x] * coeff[7]) + (py2[x2] * coeff[8]);
-}
-
-static void ConvolveOneF1(const RsExpandKernelDriverInfo *info, uint32_t x, float *out,
-                          const float *py0, const float *py1, const float *py2,
-                          const float* coeff) {
-
-    uint32_t x1 = rsMax((int32_t)x-1, 0);
-    uint32_t x2 = rsMin((int32_t)x+1, (int32_t)info->dim.x-1);
-    *out = (py0[x1] * coeff[0]) + (py0[x] * coeff[1]) + (py0[x2] * coeff[2]) +
-           (py1[x1] * coeff[3]) + (py1[x] * coeff[4]) + (py1[x2] * coeff[5]) +
-           (py2[x1] * coeff[6]) + (py2[x] * coeff[7]) + (py2[x2] * coeff[8]);
-}
-
-void RsdCpuScriptIntrinsicConvolve3x3::kernelU4(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-    RsdCpuScriptIntrinsicConvolve3x3 *cp = (RsdCpuScriptIntrinsicConvolve3x3 *)info->usr;
-
-    if (!cp->mAlloc.get()) {
-        ALOGE("Convolve3x3 executed without input, skipping");
-        return;
-    }
-    const uchar *pin = (const uchar *)cp->mAlloc->mHal.drvState.lod[0].mallocPtr;
-    const size_t stride = cp->mAlloc->mHal.drvState.lod[0].stride;
-
-    uint32_t y1 = rsMin((int32_t)info->current.y + 1, (int32_t)(info->dim.y-1));
-    uint32_t y2 = rsMax((int32_t)info->current.y - 1, 0);
-    const uchar4 *py0 = (const uchar4 *)(pin + stride * y2);
-    const uchar4 *py1 = (const uchar4 *)(pin + stride * info->current.y);
-    const uchar4 *py2 = (const uchar4 *)(pin + stride * y1);
-
-    uchar4 *out = (uchar4 *)info->outPtr[0];
     uint32_t x1 = xstart;
     uint32_t x2 = xend;
-    if(x1 == 0) {
-        ConvolveOneU4(info, 0, out, py0, py1, py2, cp->mFp);
-        x1 ++;
+    if (x1 == 0) {
+        convolveOneU<uchar4, float4>(0, out, py0, py1, py2, mFp, mSizeX);
+        x1++;
         out++;
     }
 
-    if(x2 > x1) {
+    if (x2 > x1) {
 #if defined(ARCH_ARM_USE_INTRINSICS) || defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             int32_t len = (x2 - x1 - 1) >> 1;
-            if(len > 0) {
-                rsdIntrinsicConvolve3x3_K(out, &py0[x1-1], &py1[x1-1], &py2[x1-1], cp->mIp, len);
+            if (len > 0) {
+                rsdIntrinsicConvolve3x3_K(out, &py0[x1 - 1], &py1[x1 - 1], &py2[x1 - 1], mIp, len);
                 x1 += len << 1;
                 out += len << 1;
             }
         }
 #endif
 
-        while(x1 != x2) {
-            ConvolveOneU4(info, x1, out, py0, py1, py2, cp->mFp);
+        while (x1 != x2) {
+            convolveOneU<uchar4, float4>(x1, out, py0, py1, py2, mFp, mSizeX);
             out++;
             x1++;
         }
     }
 }
 
-void RsdCpuScriptIntrinsicConvolve3x3::kernelU2(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-    RsdCpuScriptIntrinsicConvolve3x3 *cp = (RsdCpuScriptIntrinsicConvolve3x3 *)info->usr;
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_SUPPORTS_FLOAT
+template <typename T>
+void RsdCpuScriptIntrinsicConvolve3x3_kernelF(void* in, T* out, uint32_t xstart, uint32_t xend,
+                                              uint32_t currentY, size_t sizeX, size_t sizeY,
+                                              size_t vectorSize, float* fp) {
+    const uchar* pin = (const uchar*)in;
+    const size_t stride = sizeX * vectorSize * 4;  // float takes 4 bytes
 
-    if (!cp->mAlloc.get()) {
-        ALOGE("Convolve3x3 executed without input, skipping");
-        return;
+    uint32_t y1 = std::min((int32_t)currentY + 1, (int32_t)(sizeY - 1));
+    uint32_t y2 = std::max((int32_t)currentY - 1, 0);
+    const T* py0 = (const T*)(pin + stride * y2);
+    const T* py1 = (const T*)(pin + stride * currentY);
+    const T* py2 = (const T*)(pin + stride * y1);
+
+    for (uint32_t x = xstart; x < xend; x++, out++) {
+        ConvolveOneF<T>(x, out, py0, py1, py2, fp, sizeX);
     }
-    const uchar *pin = (const uchar *)cp->mAlloc->mHal.drvState.lod[0].mallocPtr;
-    const size_t stride = cp->mAlloc->mHal.drvState.lod[0].stride;
+}
+#endif  // ANDROID_RENDERSCRIPT_TOOLKIT_SUPPORTS_FLOAT
 
-    uint32_t y1 = rsMin((int32_t)info->current.y + 1, (int32_t)(info->dim.y-1));
-    uint32_t y2 = rsMax((int32_t)info->current.y - 1, 0);
-    const uchar2 *py0 = (const uchar2 *)(pin + stride * y2);
-    const uchar2 *py1 = (const uchar2 *)(pin + stride * info->current.y);
-    const uchar2 *py2 = (const uchar2 *)(pin + stride * y1);
+template <typename InputOutputType, typename ComputationType>
+static void convolveU(const uchar* pin, uchar* pout, size_t vectorSize, size_t sizeX, size_t sizeY,
+                      size_t startX, size_t startY, size_t endX, size_t endY, float* fp) {
+    const size_t stride = vectorSize * sizeX;
+    for (size_t y = startY; y < endY; y++) {
+        uint32_t y1 = std::min((int32_t)y + 1, (int32_t)(sizeY - 1));
+        uint32_t y2 = std::max((int32_t)y - 1, 0);
 
-    uchar2 *out = (uchar2 *)info->outPtr[0];
-    uint32_t x1 = xstart;
-    uint32_t x2 = xend;
-    if(x1 == 0) {
-        ConvolveOneU2(info, 0, out, py0, py1, py2, cp->mFp);
-        x1 ++;
-        out++;
-    }
-
-    if(x2 > x1) {
-#if 0//defined(ARCH_ARM_HAVE_NEON)
-        int32_t len = (x2 - x1 - 1) >> 1;
-        if(len > 0) {
-            rsdIntrinsicConvolve3x3_K(out, &py0[x1-1], &py1[x1-1], &py2[x1-1], cp->mIp, len);
-            x1 += len << 1;
-            out += len << 1;
-        }
-#endif
-
-        while(x1 != x2) {
-            ConvolveOneU2(info, x1, out, py0, py1, py2, cp->mFp);
-            out++;
-            x1++;
+        size_t offset = (y * sizeX + startX) * vectorSize;
+        InputOutputType* px = (InputOutputType*)(pout + offset);
+        InputOutputType* py0 = (InputOutputType*)(pin + stride * y2);
+        InputOutputType* py1 = (InputOutputType*)(pin + stride * y);
+        InputOutputType* py2 = (InputOutputType*)(pin + stride * y1);
+        for (uint32_t x = startX; x < endX; x++, px++) {
+            convolveOneU<InputOutputType, ComputationType>(x, px, py0, py1, py2, fp, sizeX);
         }
     }
 }
 
-void RsdCpuScriptIntrinsicConvolve3x3::kernelU1(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-    RsdCpuScriptIntrinsicConvolve3x3 *cp = (RsdCpuScriptIntrinsicConvolve3x3 *)info->usr;
+void Convolve3x3Task::convolveU4(const uchar* pin, uchar* pout, size_t vectorSize, size_t sizeX,
+                                 size_t sizeY, size_t startX, size_t startY, size_t endX,
+                                 size_t endY) {
+    const size_t stride = paddedSize(vectorSize) * sizeX;
+    for (size_t y = startY; y < endY; y++) {
+        uint32_t y1 = std::min((int32_t)y + 1, (int32_t)(sizeY - 1));
+        uint32_t y2 = std::max((int32_t)y - 1, 0);
 
-    if (!cp->mAlloc.get()) {
-        ALOGE("Convolve3x3 executed without input, skipping");
-        return;
-    }
-    const uchar *pin = (const uchar *)cp->mAlloc->mHal.drvState.lod[0].mallocPtr;
-    const size_t stride = cp->mAlloc->mHal.drvState.lod[0].stride;
-
-    uint32_t y1 = rsMin((int32_t)info->current.y + 1, (int32_t)(info->dim.y-1));
-    uint32_t y2 = rsMax((int32_t)info->current.y - 1, 0);
-    const uchar *py0 = (const uchar *)(pin + stride * y2);
-    const uchar *py1 = (const uchar *)(pin + stride * info->current.y);
-    const uchar *py2 = (const uchar *)(pin + stride * y1);
-
-    uchar *out = (uchar *)info->outPtr[0];
-    uint32_t x1 = xstart;
-    uint32_t x2 = xend;
-    if(x1 == 0) {
-        ConvolveOneU1(info, 0, out, py0, py1, py2, cp->mFp);
-        x1 ++;
-        out++;
-    }
-
-    if(x2 > x1) {
-#if 0//defined(ARCH_ARM_HAVE_NEON)
-        int32_t len = (x2 - x1 - 1) >> 1;
-        if(len > 0) {
-            rsdIntrinsicConvolve3x3_K(out, &py0[x1-1], &py1[x1-1], &py2[x1-1], cp->mIp, len);
-            x1 += len << 1;
-            out += len << 1;
-        }
-#endif
-
-        while(x1 != x2) {
-            ConvolveOneU1(info, x1, out, py0, py1, py2, cp->mFp);
-            out++;
-            x1++;
-        }
+        size_t offset = (y * sizeX + startX) * paddedSize(vectorSize);
+        uchar* px = pout + offset;
+        const uchar* py0 = pin + stride * y2;
+        const uchar* py1 = pin + stride * y;
+        const uchar* py2 = pin + stride * y1;
+        kernelU4(px, startX, endX, py0, py1, py2);
     }
 }
 
-void RsdCpuScriptIntrinsicConvolve3x3::kernelF4(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-    RsdCpuScriptIntrinsicConvolve3x3 *cp = (RsdCpuScriptIntrinsicConvolve3x3 *)info->usr;
-
-    if (!cp->mAlloc.get()) {
-        ALOGE("Convolve3x3 executed without input, skipping");
-        return;
-    }
-    const uchar *pin = (const uchar *)cp->mAlloc->mHal.drvState.lod[0].mallocPtr;
-    const size_t stride = cp->mAlloc->mHal.drvState.lod[0].stride;
-
-    uint32_t y1 = rsMin((int32_t)info->current.y + 1, (int32_t)(info->dim.y-1));
-    uint32_t y2 = rsMax((int32_t)info->current.y - 1, 0);
-    const float4 *py0 = (const float4 *)(pin + stride * y2);
-    const float4 *py1 = (const float4 *)(pin + stride * info->current.y);
-    const float4 *py2 = (const float4 *)(pin + stride * y1);
-
-    float4 *out = (float4 *)info->outPtr[0];
-    uint32_t x1 = xstart;
-    uint32_t x2 = xend;
-    if(x1 == 0) {
-        ConvolveOneF4(info, 0, out, py0, py1, py2, cp->mFp);
-        x1 ++;
-        out++;
-    }
-
-    if(x2 > x1) {
-#if 0//defined(ARCH_ARM_HAVE_NEON)
-        int32_t len = (x2 - x1 - 1) >> 1;
-        if(len > 0) {
-            rsdIntrinsicConvolve3x3_K(out, &py0[x1-1], &py1[x1-1], &py2[x1-1], cp->mIp, len);
-            x1 += len << 1;
-            out += len << 1;
-        }
-#endif
-
-        while(x1 != x2) {
-            ConvolveOneF4(info, x1, out, py0, py1, py2, cp->mFp);
-            out++;
-            x1++;
-        }
-    }
-}
-
-void RsdCpuScriptIntrinsicConvolve3x3::kernelF2(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-    RsdCpuScriptIntrinsicConvolve3x3 *cp = (RsdCpuScriptIntrinsicConvolve3x3 *)info->usr;
-
-    if (!cp->mAlloc.get()) {
-        ALOGE("Convolve3x3 executed without input, skipping");
-        return;
-    }
-    const uchar *pin = (const uchar *)cp->mAlloc->mHal.drvState.lod[0].mallocPtr;
-    const size_t stride = cp->mAlloc->mHal.drvState.lod[0].stride;
-
-    uint32_t y1 = rsMin((int32_t)info->current.y + 1, (int32_t)(info->dim.y-1));
-    uint32_t y2 = rsMax((int32_t)info->current.y - 1, 0);
-    const float2 *py0 = (const float2 *)(pin + stride * y2);
-    const float2 *py1 = (const float2 *)(pin + stride * info->current.y);
-    const float2 *py2 = (const float2 *)(pin + stride * y1);
-
-    float2 *out = (float2 *)info->outPtr[0];
-    uint32_t x1 = xstart;
-    uint32_t x2 = xend;
-    if(x1 == 0) {
-        ConvolveOneF2(info, 0, out, py0, py1, py2, cp->mFp);
-        x1 ++;
-        out++;
-    }
-
-    if(x2 > x1) {
-#if 0//defined(ARCH_ARM_HAVE_NEON)
-        int32_t len = (x2 - x1 - 1) >> 1;
-        if(len > 0) {
-            rsdIntrinsicConvolve3x3_K(out, &py0[x1-1], &py1[x1-1], &py2[x1-1], cp->mIp, len);
-            x1 += len << 1;
-            out += len << 1;
-        }
-#endif
-
-        while(x1 != x2) {
-            ConvolveOneF2(info, x1, out, py0, py1, py2, cp->mFp);
-            out++;
-            x1++;
-        }
-    }
-}
-void RsdCpuScriptIntrinsicConvolve3x3::kernelF1(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-    RsdCpuScriptIntrinsicConvolve3x3 *cp = (RsdCpuScriptIntrinsicConvolve3x3 *)info->usr;
-
-    if (!cp->mAlloc.get()) {
-        ALOGE("Convolve3x3 executed without input, skipping");
-        return;
-    }
-    const uchar *pin = (const uchar *)cp->mAlloc->mHal.drvState.lod[0].mallocPtr;
-    const size_t stride = cp->mAlloc->mHal.drvState.lod[0].stride;
-
-    uint32_t y1 = rsMin((int32_t)info->current.y + 1, (int32_t)(info->dim.y-1));
-    uint32_t y2 = rsMax((int32_t)info->current.y - 1, 0);
-    const float *py0 = (const float *)(pin + stride * y2);
-    const float *py1 = (const float *)(pin + stride * info->current.y);
-    const float *py2 = (const float *)(pin + stride * y1);
-
-    float *out = (float *)info->outPtr[0];
-    uint32_t x1 = xstart;
-    uint32_t x2 = xend;
-    if(x1 == 0) {
-        ConvolveOneF1(info, 0, out, py0, py1, py2, cp->mFp);
-        x1 ++;
-        out++;
-    }
-
-    if(x2 > x1) {
-#if 0//defined(ARCH_ARM_HAVE_NEON)
-        int32_t len = (x2 - x1 - 1) >> 1;
-        if(len > 0) {
-            rsdIntrinsicConvolve3x3_K(out, &py0[x1-1], &py1[x1-1], &py2[x1-1], cp->mIp, len);
-            x1 += len << 1;
-            out += len << 1;
-        }
-#endif
-
-        while(x1 != x2) {
-            ConvolveOneF1(info, x1, out, py0, py1, py2, cp->mFp);
-            out++;
-            x1++;
-        }
-    }
-}
-
-RsdCpuScriptIntrinsicConvolve3x3::RsdCpuScriptIntrinsicConvolve3x3(
-            RsdCpuReferenceImpl *ctx, const Script *s, const Element *e)
-            : RsdCpuScriptIntrinsic(ctx, s, e, RS_SCRIPT_INTRINSIC_ID_CONVOLVE_3x3) {
-
-    if (e->getType() == RS_TYPE_FLOAT_32) {
-        switch(e->getVectorSize()) {
+void Convolve3x3Task::processData(int /* threadIndex */, size_t startX, size_t startY, size_t endX,
+                                  size_t endY) {
+    // ALOGI("Thread %d start tile from (%zd, %zd) to (%zd, %zd)", threadIndex, startX, startY,
+    // endX, endY);
+    switch (mVectorSize) {
         case 1:
-            mRootPtr = &kernelF1;
+            convolveU<uchar, float>((const uchar*)mIn, (uchar*)mOut, mVectorSize, mSizeX, mSizeY,
+                                    startX, startY, endX, endY, mFp);
             break;
         case 2:
-            mRootPtr = &kernelF2;
+            convolveU<uchar2, float2>((const uchar*)mIn, (uchar*)mOut, mVectorSize, mSizeX, mSizeY,
+                                      startX, startY, endX, endY, mFp);
             break;
         case 3:
         case 4:
-            mRootPtr = &kernelF4;
+            convolveU4((const uchar*)mIn, (uchar*)mOut, mVectorSize, mSizeX, mSizeY, startX, startY,
+                       endX, endY);
             break;
-        }
-    } else {
-        switch(e->getVectorSize()) {
-        case 1:
-            mRootPtr = &kernelU1;
-            break;
-        case 2:
-            mRootPtr = &kernelU2;
-            break;
-        case 3:
-        case 4:
-            mRootPtr = &kernelU4;
-            break;
-        }
-    }
-    for(int ct=0; ct < 9; ct++) {
-        mFp[ct] = 1.f / 9.f;
-        mIp[ct] = (int16_t)(mFp[ct] * 256.f + 0.5f);
     }
 }
 
-RsdCpuScriptIntrinsicConvolve3x3::~RsdCpuScriptIntrinsicConvolve3x3() {
+void RenderScriptToolkit::convolve3x3(const void* in, void* out, size_t vectorSize, size_t sizeX,
+                                      size_t sizeY, const float* coefficients,
+                                      const Restriction* restriction) {
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_VALIDATE
+    if (!validRestriction(LOG_TAG, sizeX, sizeY, restriction)) {
+        return;
+    }
+    if (vectorSize < 1 || vectorSize > 4) {
+        ALOGE("The vectorSize should be between 1 and 4. %zu provided.", vectorSize);
+        return;
+    }
+#endif
+
+    Convolve3x3Task task(in, out, vectorSize, sizeX, sizeY, coefficients, restriction);
+    processor->doTask(&task);
 }
 
-void RsdCpuScriptIntrinsicConvolve3x3::populateScript(Script *s) {
-    s->mHal.info.exportedVariableCount = 2;
-}
-
-void RsdCpuScriptIntrinsicConvolve3x3::invokeFreeChildren() {
-    mAlloc.clear();
-}
-
-RsdCpuScriptImpl * rsdIntrinsic_Convolve3x3(RsdCpuReferenceImpl *ctx, const Script *s,
-                                            const Element *e) {
-
-    return new RsdCpuScriptIntrinsicConvolve3x3(ctx, s, e);
-}
-
-} // namespace renderscript
-} // namespace android
+}  // namespace renderscript
+}  // namespace android

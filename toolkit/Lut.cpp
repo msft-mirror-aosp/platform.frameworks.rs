@@ -14,88 +14,69 @@
  * limitations under the License.
  */
 
+#include <cstdint>
 
-#include "rsCpuIntrinsic.h"
-#include "rsCpuIntrinsicInlines.h"
+#include "RenderScriptToolkit.h"
+#include "TaskProcessor.h"
+#include "Utils.h"
+
+#define LOG_TAG "renderscript.toolkit.Lut"
 
 namespace android {
 namespace renderscript {
 
+class LutTask : public Task {
+    const uchar4* mIn;
+    uchar4* mOut;
+    const uchar* mRedTable;
+    const uchar* mGreenTable;
+    const uchar* mBlueTable;
+    const uchar* mAlphaTable;
 
-class RsdCpuScriptIntrinsicLUT : public RsdCpuScriptIntrinsic {
-public:
-    void populateScript(Script *) override;
-    void invokeFreeChildren() override;
+    // Process a 2D tile of the overall work. threadIndex identifies which thread does the work.
+    virtual void processData(int threadIndex, size_t startX, size_t startY, size_t endX,
+                             size_t endY) override;
 
-    void setGlobalObj(uint32_t slot, ObjectBase *data) override;
-
-    ~RsdCpuScriptIntrinsicLUT() override;
-    RsdCpuScriptIntrinsicLUT(RsdCpuReferenceImpl *ctx, const Script *s, const Element *e);
-
-protected:
-    ObjectBaseRef<Allocation> lut;
-
-    static void kernel(const RsExpandKernelDriverInfo *info,
-                       uint32_t xstart, uint32_t xend,
-                       uint32_t outstep);
+   public:
+    LutTask(const uint8_t* input, uint8_t* output, size_t sizeX, size_t sizeY, const uint8_t* red,
+            const uint8_t* green, const uint8_t* blue, const uint8_t* alpha,
+            const Restriction* restriction)
+        : Task{sizeX, sizeY, 4, true, restriction},
+          mIn{reinterpret_cast<const uchar4*>(input)},
+          mOut{reinterpret_cast<uchar4*>(output)},
+          mRedTable{red},
+          mGreenTable{green},
+          mBlueTable{blue},
+          mAlphaTable{alpha} {}
 };
 
-
-void RsdCpuScriptIntrinsicLUT::setGlobalObj(uint32_t slot, ObjectBase *data) {
-    rsAssert(slot == 0);
-    lut.set(static_cast<Allocation *>(data));
-}
-
-
-void RsdCpuScriptIntrinsicLUT::kernel(const RsExpandKernelDriverInfo *info,
-                                      uint32_t xstart, uint32_t xend,
-                                      uint32_t outstep) {
-    RsdCpuScriptIntrinsicLUT *cp = (RsdCpuScriptIntrinsicLUT *)info->usr;
-
-    uchar *out = (uchar *)info->outPtr[0];
-    const uchar *in = (uchar *)info->inPtr[0];
-    uint32_t x1 = xstart;
-    uint32_t x2 = xend;
-
-    const uchar *tr = (const uchar *)cp->lut->mHal.drvState.lod[0].mallocPtr;
-    const uchar *tg = &tr[256];
-    const uchar *tb = &tg[256];
-    const uchar *ta = &tb[256];
-
-    while (x1 < x2) {
-        out[0] = tr[in[0]];
-        out[1] = tg[in[1]];
-        out[2] = tb[in[2]];
-        out[3] = ta[in[3]];
-        in += 4;
-        out += 4;
-        x1++;
+void LutTask::processData(int /* threadIndex */, size_t startX, size_t startY, size_t endX,
+                          size_t endY) {
+    for (size_t y = startY; y < endY; y++) {
+        size_t offset = mSizeX * y + startX;
+        const uchar4* in = mIn + offset;
+        uchar4* out = mOut + offset;
+        for (size_t x = startX; x < endX; x++) {
+            auto v = *in;
+            *out = uchar4{mRedTable[v.x], mGreenTable[v.y], mBlueTable[v.z], mAlphaTable[v.w]};
+            in++;
+            out++;
+        }
     }
 }
 
-RsdCpuScriptIntrinsicLUT::RsdCpuScriptIntrinsicLUT(RsdCpuReferenceImpl *ctx,
-                                                   const Script *s, const Element *e)
-            : RsdCpuScriptIntrinsic(ctx, s, e, RS_SCRIPT_INTRINSIC_ID_LUT) {
+void RenderScriptToolkit::lut(const uint8_t* input, uint8_t* output, size_t sizeX, size_t sizeY,
+                              const uint8_t* red, const uint8_t* green, const uint8_t* blue,
+                              const uint8_t* alpha, const Restriction* restriction) {
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_VALIDATE
+    if (!validRestriction(LOG_TAG, sizeX, sizeY, restriction)) {
+        return;
+    }
+#endif
 
-    mRootPtr = &kernel;
+    LutTask task(input, output, sizeX, sizeY, red, green, blue, alpha, restriction);
+    processor->doTask(&task);
 }
 
-RsdCpuScriptIntrinsicLUT::~RsdCpuScriptIntrinsicLUT() {
-}
-
-void RsdCpuScriptIntrinsicLUT::populateScript(Script *s) {
-    s->mHal.info.exportedVariableCount = 1;
-}
-
-void RsdCpuScriptIntrinsicLUT::invokeFreeChildren() {
-    lut.clear();
-}
-
-RsdCpuScriptImpl * rsdIntrinsic_LUT(RsdCpuReferenceImpl *ctx,
-                                    const Script *s, const Element *e) {
-
-    return new RsdCpuScriptIntrinsicLUT(ctx, s, e);
-}
-
-} // namespace renderscript
-} // namespace android
+}  // namespace renderscript
+}  // namespace android
