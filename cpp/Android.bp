@@ -57,6 +57,7 @@ cc_defaults {
         "-Werror",
         "-Wall",
         "-Wextra",
+        "-Wno-deprecated-declarations",
         "-Wno-unused-parameter",
         "-Wno-unused-variable",
     ],
