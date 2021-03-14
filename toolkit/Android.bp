@@ -4,6 +4,17 @@ package {
 
 // TODO: In later CLs, this build file will be replaced by a stand alone build that's not part of Android.
 
+cc_binary {
+    name: "renderscripttoolkittest",
+    srcs: [
+        "TestTaskProcessor.cpp"
+    ],
+    shared_libs: [
+         "libbase",
+    	 "librenderscripttoolkit",
+    ],
+}
+
 cc_library_shared {
     name: "librenderscripttoolkit",
     defaults: [],
@@ -16,6 +27,8 @@ cc_library_shared {
 
     srcs: [
         // TODO A later CL will modify the files below to compile independently of the rest of RenderScript
+	"TaskProcessor.cpp",
+	"Utils.cpp",
         //"Lut3d.cpp",
         //"Blend.cpp",
         //"Blur.cpp",
@@ -27,6 +40,8 @@ cc_library_shared {
         //"Lut.cpp",
         //"YuvToRgb.cpp",
     ],
+
+    static_libs: [ "cpufeatures" ],
 
     arch: {
         arm64: {
@@ -86,6 +101,7 @@ cc_library_shared {
     },
 
     shared_libs: [
+        "libbase",
         // TODO Once we compile in the .cpp files, check if any of these libraries are needed.
         //"libc++",
         //"liblog",
@@ -101,6 +117,7 @@ cc_library_shared {
     ],
 
     cflags: [
+        "-Wthread-safety",
         "-Werror",
         "-Wall",
         "-Wextra",
