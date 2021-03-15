@@ -418,7 +418,7 @@ void BlurTask::kernelU4(void *outPtr, uint32_t xstart, uint32_t xend, uint32_t c
         x1++;
     }
 #if defined(ARCH_X86_HAVE_SSSE3)
-    if (usesSimd) {
+    if (mUsesSimd) {
         if ((x1 + mIradius) < x2) {
             rsdIntrinsicBlurHFU4_K(out, buf - mIradius, mFp,
                                    mIradius * 2 + 1, x1, x2 - mIradius);
@@ -485,7 +485,7 @@ void BlurTask::kernelU1(void *outPtr, uint32_t xstart, uint32_t xend, uint32_t c
         x1++;
     }
 #if defined(ARCH_X86_HAVE_SSSE3)
-    if (cpuSupportsSimd) {
+    if (mUsesSimd) {
         if ((x1 + mIradius) < x2) {
             uint32_t len = x2 - (x1 + mIradius);
             len &= ~3;
