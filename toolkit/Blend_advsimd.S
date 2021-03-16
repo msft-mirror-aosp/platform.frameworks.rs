@@ -30,10 +30,15 @@
     X(9, SRC_ATOP) \
     X(10, DST_ATOP) \
     X(11, XOR) \
-    X(14, MULTIPLY) \
-    X(21, DIFFERENCE) \
-    X(34, ADD) \
-    X(35, SUBTRACT)
+    X(12, MULTIPLY) \
+    X(13, ADD) \
+    X(14, SUBTRACT)
+
+/* This operation was not enabled in the original RenderScript. We could
+ * enable it.
+ *
+ *  X(15, DIFFERENCE) \
+ */
 
 /* For every blend operation supported, define a macro with just the arithmetic
  * component.  The rest can be handled later on.

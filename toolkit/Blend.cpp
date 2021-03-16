@@ -14,76 +14,43 @@
  * limitations under the License.
  */
 
+#include <assert.h>
 
-#include "rsCpuIntrinsic.h"
-#include "rsCpuIntrinsicInlines.h"
+#include <cstdint>
+
+#include "RenderScriptToolkit.h"
+#include "TaskProcessor.h"
+#include "Utils.h"
 
 namespace android {
 namespace renderscript {
 
+#define LOG_TAG "renderscript.toolkit.Blend"
 
-class RsdCpuScriptIntrinsicBlend : public RsdCpuScriptIntrinsic {
-public:
-    void populateScript(Script *) override;
+/**
+ * Blends a source into a destination, based on the mode.
+ */
+class BlendTask : public Task {
+    // The type of blending to do.
+    RenderScriptToolkit::BlendingMode mMode;
+    // The input we're blending.
+    const uchar4* mIn;
+    // The destination, used both for input and output.
+    uchar4* mOut;
 
-    ~RsdCpuScriptIntrinsicBlend() override;
-    RsdCpuScriptIntrinsicBlend(RsdCpuReferenceImpl *ctx, const Script *s, const Element *e);
+    void blend(RenderScriptToolkit::BlendingMode mode, const uchar4* in, uchar4* out,
+               uint32_t length);
+    // Process a 2D tile of the overall work. threadIndex identifies which thread does the work.
+    virtual void processData(int threadIndex, size_t startX, size_t startY, size_t endX,
+                             size_t endY) override;
 
-protected:
-    static void kernel(const RsExpandKernelDriverInfo *info, uint32_t xstart,
-                       uint32_t xend, uint32_t outstep);
-};
-
-} // namespace renderscript
-} // namespace android
-
-
-enum {
-    BLEND_CLEAR = 0,
-    BLEND_SRC = 1,
-    BLEND_DST = 2,
-    BLEND_SRC_OVER = 3,
-    BLEND_DST_OVER = 4,
-    BLEND_SRC_IN = 5,
-    BLEND_DST_IN = 6,
-    BLEND_SRC_OUT = 7,
-    BLEND_DST_OUT = 8,
-    BLEND_SRC_ATOP = 9,
-    BLEND_DST_ATOP = 10,
-    BLEND_XOR = 11,
-
-    BLEND_NORMAL = 12,
-    BLEND_AVERAGE = 13,
-    BLEND_MULTIPLY = 14,
-    BLEND_SCREEN = 15,
-    BLEND_DARKEN = 16,
-    BLEND_LIGHTEN = 17,
-    BLEND_OVERLAY = 18,
-    BLEND_HARDLIGHT = 19,
-    BLEND_SOFTLIGHT = 20,
-    BLEND_DIFFERENCE = 21,
-    BLEND_NEGATION = 22,
-    BLEND_EXCLUSION = 23,
-    BLEND_COLOR_DODGE = 24,
-    BLEND_INVERSE_COLOR_DODGE = 25,
-    BLEND_SOFT_DODGE = 26,
-    BLEND_COLOR_BURN = 27,
-    BLEND_INVERSE_COLOR_BURN = 28,
-    BLEND_SOFT_BURN = 29,
-    BLEND_REFLECT = 30,
-    BLEND_GLOW = 31,
-    BLEND_FREEZE = 32,
-    BLEND_HEAT = 33,
-    BLEND_ADD = 34,
-    BLEND_SUBTRACT = 35,
-    BLEND_STAMP = 36,
-    BLEND_RED = 37,
-    BLEND_GREEN = 38,
-    BLEND_BLUE = 39,
-    BLEND_HUE = 40,
-    BLEND_SATURATION = 41,
-    BLEND_COLOR = 42,
-    BLEND_LUMINOSITY = 43
+   public:
+    BlendTask(RenderScriptToolkit::BlendingMode mode, const uint8_t* in, uint8_t* out, size_t sizeX,
+              size_t sizeY, const Restriction* restriction)
+        : Task{sizeX, sizeY, 4, true, restriction},
+          mMode{mode},
+          mIn{reinterpret_cast<const uchar4*>(in)},
+          mOut{reinterpret_cast<uchar4*>(out)} {}
 };
 
 #if defined(ARCH_ARM_USE_INTRINSICS)
@@ -106,9 +73,6 @@ extern void rsdIntrinsicBlendAdd_K(void *dst, const void *src, uint32_t count8);
 extern void rsdIntrinsicBlendSub_K(void *dst, const void *src, uint32_t count8);
 #endif
 
-namespace android {
-namespace renderscript {
-
 // Convert vector to uchar4, clipping each value to 255.
 template <typename TI>
 static inline uchar4 convertClipped(TI amount) {
@@ -118,41 +82,37 @@ static inline uchar4 convertClipped(TI amount) {
                     static_cast<uchar>(amount.w > 255 ? 255 : amount.w)};
 }
 
-void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
-                                        uint32_t xstart, uint32_t xend,
-                                        uint32_t outstep) {
-    // instep/outstep can be ignored--sizeof(uchar4) known at compile time
-    uchar4 *out = (uchar4 *)info->outPtr[0];
-    uchar4 *in = (uchar4 *)info->inPtr[0];
-    uint32_t x1 = xstart;
-    uint32_t x2 = xend;
+void BlendTask::blend(RenderScriptToolkit::BlendingMode mode, const uchar4* in, uchar4* out,
+                      uint32_t length) {
+    uint32_t x1 = 0;
+    uint32_t x2 = length;
 
 #if defined(ARCH_ARM_USE_INTRINSICS)
-    if (gArchUseSIMD) {
-        if (rsdIntrinsicBlend_K(out, in, info->slot, 0, x2 - x1) >= 0) {
+    if (mUsesSimd) {
+        if (rsdIntrinsicBlend_K(out, in, (int) mode, x1, x2) >= 0) {
             return;
         } else {
-            ALOGW("Intrinsic Blend failed to use SIMD for %d", info->slot);
+            ALOGW("Intrinsic Blend failed to use SIMD for %d", mode);
         }
     }
 #endif
-    switch (info->slot) {
-    case BLEND_CLEAR:
+    switch (mode) {
+    case RenderScriptToolkit::BlendingMode::CLEAR:
         for (;x1 < x2; x1++, out++) {
             *out = 0;
         }
         break;
-    case BLEND_SRC:
+    case RenderScriptToolkit::BlendingMode::SRC:
         for (;x1 < x2; x1++, out++, in++) {
           *out = *in;
         }
         break;
-    //BLEND_DST is a NOP
-    case BLEND_DST:
+    //RenderScriptToolkit::BlendingMode::DST is a NOP
+    case RenderScriptToolkit::BlendingMode::DST:
         break;
-    case BLEND_SRC_OVER:
+    case RenderScriptToolkit::BlendingMode::SRC_OVER:
     #if defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             if ((x1 + 8) < x2) {
                 uint32_t len = (x2 - x1) >> 3;
                 rsdIntrinsicBlendSrcOver_K(out, in, len);
@@ -163,15 +123,15 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
         }
     #endif
         for (;x1 < x2; x1++, out++, in++) {
-            ushort4 in_s = convert_ushort4(*in);
-            ushort4 out_s = convert_ushort4(*out);
+            ushort4 in_s = convert<ushort4>(*in);
+            ushort4 out_s = convert<ushort4>(*out);
             in_s = in_s + ((out_s * (ushort4)(255 - in_s.w)) >> (ushort4)8);
             *out = convertClipped(in_s);
         }
         break;
-    case BLEND_DST_OVER:
+    case RenderScriptToolkit::BlendingMode::DST_OVER:
     #if defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             if ((x1 + 8) < x2) {
                 uint32_t len = (x2 - x1) >> 3;
                 rsdIntrinsicBlendDstOver_K(out, in, len);
@@ -182,15 +142,15 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
         }
      #endif
         for (;x1 < x2; x1++, out++, in++) {
-            ushort4 in_s = convert_ushort4(*in);
-            ushort4 out_s = convert_ushort4(*out);
+            ushort4 in_s = convert<ushort4>(*in);
+            ushort4 out_s = convert<ushort4>(*out);
             in_s = out_s + ((in_s * (ushort4)(255 - out_s.w)) >> (ushort4)8);
             *out = convertClipped(in_s);
         }
         break;
-    case BLEND_SRC_IN:
+    case RenderScriptToolkit::BlendingMode::SRC_IN:
     #if defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             if ((x1 + 8) < x2) {
                 uint32_t len = (x2 - x1) >> 3;
                 rsdIntrinsicBlendSrcIn_K(out, in, len);
@@ -199,16 +159,16 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
                 in += len << 3;
             }
         }
-    #endif
+#endif
         for (;x1 < x2; x1++, out++, in++) {
-            ushort4 in_s = convert_ushort4(*in);
+            ushort4 in_s = convert<ushort4>(*in);
             in_s = (in_s * out->w) >> (ushort4)8;
-            *out = convert_uchar4(in_s);
+            *out = convert<uchar4>(in_s);
         }
         break;
-    case BLEND_DST_IN:
+    case RenderScriptToolkit::BlendingMode::DST_IN:
     #if defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             if ((x1 + 8) < x2) {
                 uint32_t len = (x2 - x1) >> 3;
                 rsdIntrinsicBlendDstIn_K(out, in, len);
@@ -219,14 +179,14 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
         }
      #endif
         for (;x1 < x2; x1++, out++, in++) {
-            short4 out_s = convert_short4(*out);
-            out_s = (out_s * in->w) >> (short4)8;
-            *out = convert_uchar4(out_s);
+            ushort4 out_s = convert<ushort4>(*out);
+            out_s = (out_s * in->w) >> (ushort4)8;
+            *out = convert<uchar4>(out_s);
         }
         break;
-    case BLEND_SRC_OUT:
+    case RenderScriptToolkit::BlendingMode::SRC_OUT:
     #if defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             if ((x1 + 8) < x2) {
                 uint32_t len = (x2 - x1) >> 3;
                 rsdIntrinsicBlendSrcOut_K(out, in, len);
@@ -237,14 +197,14 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
         }
     #endif
         for (;x1 < x2; x1++, out++, in++) {
-            short4 in_s = convert_short4(*in);
-            in_s = (in_s * (short4)(255 - out->w)) >> (short4)8;
-            *out = convert_uchar4(in_s);
+            ushort4 in_s = convert<ushort4>(*in);
+            in_s = (in_s * (ushort4)(255 - out->w)) >> (ushort4)8;
+            *out = convert<uchar4>(in_s);
         }
         break;
-    case BLEND_DST_OUT:
+    case RenderScriptToolkit::BlendingMode::DST_OUT:
     #if defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             if ((x1 + 8) < x2) {
                 uint32_t len = (x2 - x1) >> 3;
                 rsdIntrinsicBlendDstOut_K(out, in, len);
@@ -255,14 +215,14 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
         }
     #endif
         for (;x1 < x2; x1++, out++, in++) {
-            short4 out_s = convert_short4(*out);
-            out_s = (out_s * (short4)(255 - in->w)) >> (short4)8;
-            *out = convert_uchar4(out_s);
+            ushort4 out_s = convert<ushort4>(*out);
+            out_s = (out_s * (ushort4)(255 - in->w)) >> (ushort4)8;
+            *out = convert<uchar4>(out_s);
         }
         break;
-    case BLEND_SRC_ATOP:
+    case RenderScriptToolkit::BlendingMode::SRC_ATOP:
     #if defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             if ((x1 + 8) < x2) {
                 uint32_t len = (x2 - x1) >> 3;
                 rsdIntrinsicBlendSrcAtop_K(out, in, len);
@@ -276,16 +236,16 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
             // The max value the operation could produce before the shift
             // is 255 * 255 + 255 * (255 - 0) = 130050, or 0x1FC02.
             // That value does not fit in a ushort, so we use uint.
-            uint4 in_s = convert_uint4(*in);
-            uint4 out_s = convert_uint4(*out);
+            uint4 in_s = convert<uint4>(*in);
+            uint4 out_s = convert<uint4>(*out);
             out_s.xyz = ((in_s.xyz * out_s.w) +
               (out_s.xyz * ((uint3)255 - (uint3)in_s.w))) >> (uint3)8;
             *out = convertClipped(out_s);
         }
         break;
-    case BLEND_DST_ATOP:
+    case RenderScriptToolkit::BlendingMode::DST_ATOP:
     #if defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             if ((x1 + 8) < x2) {
                 uint32_t len = (x2 - x1) >> 3;
                 rsdIntrinsicBlendDstAtop_K(out, in, len);
@@ -296,17 +256,17 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
         }
      #endif
         for (;x1 < x2; x1++, out++, in++) {
-            uint4 in_s = convert_uint4(*in);
-            uint4 out_s = convert_uint4(*out);
+            uint4 in_s = convert<uint4>(*in);
+            uint4 out_s = convert<uint4>(*out);
             out_s.xyz = ((out_s.xyz * in_s.w) +
               (in_s.xyz * ((uint3)255 - (uint3)out_s.w))) >> (uint3)8;
             out_s.w = in_s.w;
             *out = convertClipped(out_s);
         }
         break;
-    case BLEND_XOR:
+    case RenderScriptToolkit::BlendingMode::XOR:
     #if defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             if ((x1 + 8) < x2) {
                 uint32_t len = (x2 - x1) >> 3;
                 rsdIntrinsicBlendXor_K(out, in, len);
@@ -320,17 +280,9 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
             *out = *in ^ *out;
         }
         break;
-    case BLEND_NORMAL:
-        ALOGE("Called unimplemented blend intrinsic BLEND_NORMAL");
-        rsAssert(false);
-        break;
-    case BLEND_AVERAGE:
-        ALOGE("Called unimplemented blend intrinsic BLEND_AVERAGE");
-        rsAssert(false);
-        break;
-    case BLEND_MULTIPLY:
+    case RenderScriptToolkit::BlendingMode::MULTIPLY:
     #if defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             if ((x1 + 8) < x2) {
                 uint32_t len = (x2 - x1) >> 3;
                 rsdIntrinsicBlendMultiply_K(out, in, len);
@@ -341,89 +293,13 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
         }
     #endif
         for (;x1 < x2; x1++, out++, in++) {
-          *out = convert_uchar4((convert_short4(*in) * convert_short4(*out))
-                                >> (short4)8);
+          *out = convert<uchar4>((convert<ushort4>(*in) * convert<ushort4>(*out))
+                                >> (ushort4)8);
         }
         break;
-    case BLEND_SCREEN:
-        ALOGE("Called unimplemented blend intrinsic BLEND_SCREEN");
-        rsAssert(false);
-        break;
-    case BLEND_DARKEN:
-        ALOGE("Called unimplemented blend intrinsic BLEND_DARKEN");
-        rsAssert(false);
-        break;
-    case BLEND_LIGHTEN:
-        ALOGE("Called unimplemented blend intrinsic BLEND_LIGHTEN");
-        rsAssert(false);
-        break;
-    case BLEND_OVERLAY:
-        ALOGE("Called unimplemented blend intrinsic BLEND_OVERLAY");
-        rsAssert(false);
-        break;
-    case BLEND_HARDLIGHT:
-        ALOGE("Called unimplemented blend intrinsic BLEND_HARDLIGHT");
-        rsAssert(false);
-        break;
-    case BLEND_SOFTLIGHT:
-        ALOGE("Called unimplemented blend intrinsic BLEND_SOFTLIGHT");
-        rsAssert(false);
-        break;
-    case BLEND_DIFFERENCE:
-        ALOGE("Called unimplemented blend intrinsic BLEND_DIFFERENCE");
-        rsAssert(false);
-        break;
-    case BLEND_NEGATION:
-        ALOGE("Called unimplemented blend intrinsic BLEND_NEGATION");
-        rsAssert(false);
-        break;
-    case BLEND_EXCLUSION:
-        ALOGE("Called unimplemented blend intrinsic BLEND_EXCLUSION");
-        rsAssert(false);
-        break;
-    case BLEND_COLOR_DODGE:
-        ALOGE("Called unimplemented blend intrinsic BLEND_COLOR_DODGE");
-        rsAssert(false);
-        break;
-    case BLEND_INVERSE_COLOR_DODGE:
-        ALOGE("Called unimplemented blend intrinsic BLEND_INVERSE_COLOR_DODGE");
-        rsAssert(false);
-        break;
-    case BLEND_SOFT_DODGE:
-        ALOGE("Called unimplemented blend intrinsic BLEND_SOFT_DODGE");
-        rsAssert(false);
-        break;
-    case BLEND_COLOR_BURN:
-        ALOGE("Called unimplemented blend intrinsic BLEND_COLOR_BURN");
-        rsAssert(false);
-        break;
-    case BLEND_INVERSE_COLOR_BURN:
-        ALOGE("Called unimplemented blend intrinsic BLEND_INVERSE_COLOR_BURN");
-        rsAssert(false);
-        break;
-    case BLEND_SOFT_BURN:
-        ALOGE("Called unimplemented blend intrinsic BLEND_SOFT_BURN");
-        rsAssert(false);
-        break;
-    case BLEND_REFLECT:
-        ALOGE("Called unimplemented blend intrinsic BLEND_REFLECT");
-        rsAssert(false);
-        break;
-    case BLEND_GLOW:
-        ALOGE("Called unimplemented blend intrinsic BLEND_GLOW");
-        rsAssert(false);
-        break;
-    case BLEND_FREEZE:
-        ALOGE("Called unimplemented blend intrinsic BLEND_FREEZE");
-        rsAssert(false);
-        break;
-    case BLEND_HEAT:
-        ALOGE("Called unimplemented blend intrinsic BLEND_HEAT");
-        rsAssert(false);
-        break;
-    case BLEND_ADD:
+    case RenderScriptToolkit::BlendingMode::ADD:
     #if defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             if((x1 + 8) < x2) {
                 uint32_t len = (x2 - x1) >> 3;
                 rsdIntrinsicBlendAdd_K(out, in, len);
@@ -442,9 +318,9 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
             out->w = (oA + iA) > 255 ? 255 : oA + iA;
         }
         break;
-    case BLEND_SUBTRACT:
+    case RenderScriptToolkit::BlendingMode::SUBTRACT:
     #if defined(ARCH_X86_HAVE_SSSE3)
-        if (gArchUseSIMD) {
+        if (mUsesSimd) {
             if((x1 + 8) < x2) {
                 uint32_t len = (x2 - x1) >> 3;
                 rsdIntrinsicBlendSub_K(out, in, len);
@@ -463,65 +339,32 @@ void RsdCpuScriptIntrinsicBlend::kernel(const RsExpandKernelDriverInfo *info,
             out->w = (oA - iA) < 0 ? 0 : oA - iA;
         }
         break;
-    case BLEND_STAMP:
-        ALOGE("Called unimplemented blend intrinsic BLEND_STAMP");
-        rsAssert(false);
-        break;
-    case BLEND_RED:
-        ALOGE("Called unimplemented blend intrinsic BLEND_RED");
-        rsAssert(false);
-        break;
-    case BLEND_GREEN:
-        ALOGE("Called unimplemented blend intrinsic BLEND_GREEN");
-        rsAssert(false);
-        break;
-    case BLEND_BLUE:
-        ALOGE("Called unimplemented blend intrinsic BLEND_BLUE");
-        rsAssert(false);
-        break;
-    case BLEND_HUE:
-        ALOGE("Called unimplemented blend intrinsic BLEND_HUE");
-        rsAssert(false);
-        break;
-    case BLEND_SATURATION:
-        ALOGE("Called unimplemented blend intrinsic BLEND_SATURATION");
-        rsAssert(false);
-        break;
-    case BLEND_COLOR:
-        ALOGE("Called unimplemented blend intrinsic BLEND_COLOR");
-        rsAssert(false);
-        break;
-    case BLEND_LUMINOSITY:
-        ALOGE("Called unimplemented blend intrinsic BLEND_LUMINOSITY");
-        rsAssert(false);
-        break;
 
     default:
-        ALOGE("Called unimplemented value %d", info->slot);
-        rsAssert(false);
-
+        ALOGE("Called unimplemented value %d", mode);
+        assert(false);
     }
 }
 
-
-RsdCpuScriptIntrinsicBlend::RsdCpuScriptIntrinsicBlend(RsdCpuReferenceImpl *ctx,
-                                                       const Script *s, const Element *e)
-            : RsdCpuScriptIntrinsic(ctx, s, e, RS_SCRIPT_INTRINSIC_ID_BLEND) {
-
-    mRootPtr = &kernel;
+void BlendTask::processData(int /* threadIndex */, size_t startX, size_t startY, size_t endX,
+                            size_t endY) {
+    for (size_t y = startY; y < endY; y++) {
+        size_t offset = y * mSizeX + startX;
+        blend(mMode, mIn + offset, mOut + offset, endX - startX);
+    }
 }
 
-RsdCpuScriptIntrinsicBlend::~RsdCpuScriptIntrinsicBlend() {
+void RenderScriptToolkit::blend(BlendingMode mode, const uint8_t* in, uint8_t* out, size_t sizeX,
+                                size_t sizeY, const Restriction* restriction) {
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_VALIDATE
+    if (!validRestriction(LOG_TAG, sizeX, sizeY, restriction)) {
+        return;
+    }
+#endif
+
+    BlendTask task(mode, in, out, sizeX, sizeY, restriction);
+    processor->doTask(&task);
 }
 
-void RsdCpuScriptIntrinsicBlend::populateScript(Script *s) {
-    s->mHal.info.exportedVariableCount = 0;
-}
-
-RsdCpuScriptImpl * rsdIntrinsic_Blend(RsdCpuReferenceImpl *ctx,
-                                      const Script *s, const Element *e) {
-    return new RsdCpuScriptIntrinsicBlend(ctx, s, e);
-}
-
-} // namespace renderscript
-} // namespace android
+}  // namespace renderscript
+}  // namespace android

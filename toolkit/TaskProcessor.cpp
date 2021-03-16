@@ -19,6 +19,7 @@
 #include <assert.h>
 #include <sys/prctl.h>
 
+#include "RenderScriptToolkit.h"
 #include "Utils.h"
 
 #define LOG_TAG "renderscript.toolkit.TaskProcessor"
@@ -89,7 +90,12 @@ void Task::processTile(unsigned int threadIndex, size_t tileIndex) {
     size_t endCellY = std::min(startCellY + mCellsPerTileY, endWorkY);
 
     // Call the derived class to do the specific work.
-    processData(threadIndex, startCellX, startCellY, endCellX, endCellY);
+    if (mPrefersDataAsOneRow && startCellX == 0 && endCellX == mSizeX) {
+        // When the tile covers entire rows, we can take advantage that some ops are not 2D.
+        processData(threadIndex, 0, startCellY, mSizeX * (endCellY - startCellY), startCellY + 1);
+    } else {
+        processData(threadIndex, startCellX, startCellY, endCellX, endCellY);
+    }
 }
 
 TaskProcessor::TaskProcessor(unsigned int numThreads)

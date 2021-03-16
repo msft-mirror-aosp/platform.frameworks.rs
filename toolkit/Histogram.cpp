@@ -14,316 +14,286 @@
  * limitations under the License.
  */
 
-#include "rsCpuIntrinsic.h"
-#include "rsCpuIntrinsicInlines.h"
+#include <array>
+#include <cstdint>
+
+#include "RenderScriptToolkit.h"
+#include "TaskProcessor.h"
+#include "Utils.h"
+
+#define LOG_TAG "renderscript.toolkit.Histogram"
 
 namespace android {
 namespace renderscript {
 
+class HistogramTask : public Task {
+    const uchar* mIn;
+    std::vector<int> mSums;
+    uint32_t mThreadCount;
 
-class RsdCpuScriptIntrinsicHistogram : public RsdCpuScriptIntrinsic {
-public:
-    void populateScript(Script *) override;
-    void invokeFreeChildren() override;
+    // Process a 2D tile of the overall work. threadIndex identifies which thread does the work.
+    virtual void processData(int threadIndex, size_t startX, size_t startY, size_t endX,
+                             size_t endY) override;
 
-    void setGlobalVar(uint32_t slot, const void *data, size_t dataLength) override;
-    void setGlobalObj(uint32_t slot, ObjectBase *data) override;
+    void kernelP1U4(const uchar* in, int* sums, uint32_t xstart, uint32_t xend);
+    void kernelP1U3(const uchar* in, int* sums, uint32_t xstart, uint32_t xend);
+    void kernelP1U2(const uchar* in, int* sums, uint32_t xstart, uint32_t xend);
+    void kernelP1U1(const uchar* in, int* sums, uint32_t xstart, uint32_t xend);
 
-    ~RsdCpuScriptIntrinsicHistogram() override;
-    RsdCpuScriptIntrinsicHistogram(RsdCpuReferenceImpl *ctx, const Script *s, const Element *e);
-
-protected:
-    void preLaunch(uint32_t slot, const Allocation ** ains, uint32_t inLen,
-                   Allocation * aout, const void * usr,
-                   uint32_t usrLen, const RsScriptCall *sc);
-    void postLaunch(uint32_t slot, const Allocation ** ains, uint32_t inLen,
-                    Allocation * aout, const void * usr,
-                    uint32_t usrLen, const RsScriptCall *sc);
-
-
-    float mDot[4];
-    int mDotI[4];
-    int *mSums;
-    ObjectBaseRef<Allocation> mAllocOut;
-
-    static void kernelP1U4(const RsExpandKernelDriverInfo *info,
-                           uint32_t xstart, uint32_t xend,
-                           uint32_t outstep);
-    static void kernelP1U3(const RsExpandKernelDriverInfo *info,
-                           uint32_t xstart, uint32_t xend,
-                           uint32_t outstep);
-    static void kernelP1U2(const RsExpandKernelDriverInfo *info,
-                           uint32_t xstart, uint32_t xend,
-                           uint32_t outstep);
-    static void kernelP1U1(const RsExpandKernelDriverInfo *info,
-                           uint32_t xstart, uint32_t xend,
-                           uint32_t outstep);
-
-    static void kernelP1L4(const RsExpandKernelDriverInfo *info,
-                           uint32_t xstart, uint32_t xend,
-                           uint32_t outstep);
-    static void kernelP1L3(const RsExpandKernelDriverInfo *info,
-                           uint32_t xstart, uint32_t xend,
-                           uint32_t outstep);
-    static void kernelP1L2(const RsExpandKernelDriverInfo *info,
-                           uint32_t xstart, uint32_t xend,
-                           uint32_t outstep);
-    static void kernelP1L1(const RsExpandKernelDriverInfo *info,
-                           uint32_t xstart, uint32_t xend,
-                           uint32_t outstep);
-
+   public:
+    HistogramTask(const uint8_t* in, size_t sizeX, size_t sizeY, size_t vectorSize,
+                  uint32_t threadCount, const Restriction* restriction);
+    void collateSums(int* out);
 };
 
-void RsdCpuScriptIntrinsicHistogram::setGlobalObj(uint32_t slot, ObjectBase *data) {
-    rsAssert(slot == 1);
-    mAllocOut.set(static_cast<Allocation *>(data));
+class HistogramDotTask : public Task {
+    const uchar* mIn;
+    float mDot[4];
+    int mDotI[4];
+    std::vector<int> mSums;
+    uint32_t mThreadCount;
+
+    void kernelP1L4(const uchar* in, int* sums, uint32_t xstart, uint32_t xend);
+    void kernelP1L3(const uchar* in, int* sums, uint32_t xstart, uint32_t xend);
+    void kernelP1L2(const uchar* in, int* sums, uint32_t xstart, uint32_t xend);
+    void kernelP1L1(const uchar* in, int* sums, uint32_t xstart, uint32_t xend);
+
+   public:
+    HistogramDotTask(const uint8_t* in, size_t sizeX, size_t sizeY, size_t vectorSize,
+                     uint32_t threadCount, const float* coefficients,
+                     const Restriction* restriction);
+    void collateSums(int* out);
+
+    virtual void processData(int threadIndex, size_t startX, size_t startY, size_t endX,
+                             size_t endY) override;
+};
+
+HistogramTask::HistogramTask(const uchar* in, size_t sizeX, size_t sizeY, size_t vectorSize,
+                             uint32_t threadCount, const Restriction* restriction)
+    : Task{sizeX, sizeY, vectorSize, true, restriction},
+      mIn{in},
+      mSums(256 * paddedSize(vectorSize) * threadCount) {
+    mThreadCount = threadCount;
 }
 
-void RsdCpuScriptIntrinsicHistogram::setGlobalVar(uint32_t slot, const void *data,
-                                                  size_t dataLength) {
-    rsAssert(slot == 0);
-    rsAssert(dataLength == 16);
-    memcpy(mDot, data, 16);
+void HistogramTask::processData(int threadIndex, size_t startX, size_t startY, size_t endX,
+                                size_t endY) {
+    typedef void (HistogramTask::*KernelFunction)(const uchar*, int*, uint32_t, uint32_t);
+
+    KernelFunction kernel;
+    switch (mVectorSize) {
+        case 4:
+            kernel = &HistogramTask::kernelP1U4;
+            break;
+        case 3:
+            kernel = &HistogramTask::kernelP1U3;
+            break;
+        case 2:
+            kernel = &HistogramTask::kernelP1U2;
+            break;
+        case 1:
+            kernel = &HistogramTask::kernelP1U1;
+            break;
+        default:
+            ALOGE("Bad vector size %zd", mVectorSize);
+            return;
+    }
+
+    int* sums = &mSums[256 * paddedSize(mVectorSize) * threadIndex];
+
+    for (size_t y = startY; y < endY; y++) {
+        const uchar* inPtr = mIn + (mSizeX * y + startX) * paddedSize(mVectorSize);
+        std::invoke(kernel, this, inPtr, sums, startX, endX);
+    }
+}
+
+void HistogramTask::kernelP1U4(const uchar* in, int* sums, uint32_t xstart, uint32_t xend) {
+    for (uint32_t x = xstart; x < xend; x++) {
+        sums[(in[0] << 2)]++;
+        sums[(in[1] << 2) + 1]++;
+        sums[(in[2] << 2) + 2]++;
+        sums[(in[3] << 2) + 3]++;
+        in += 4;
+    }
+}
+
+void HistogramTask::kernelP1U3(const uchar* in, int* sums, uint32_t xstart, uint32_t xend) {
+    for (uint32_t x = xstart; x < xend; x++) {
+        sums[(in[0] << 2)]++;
+        sums[(in[1] << 2) + 1]++;
+        sums[(in[2] << 2) + 2]++;
+        in += 4;
+    }
+}
+
+void HistogramTask::kernelP1U2(const uchar* in, int* sums, uint32_t xstart, uint32_t xend) {
+    for (uint32_t x = xstart; x < xend; x++) {
+        sums[(in[0] << 1)]++;
+        sums[(in[1] << 1) + 1]++;
+        in += 2;
+    }
+}
+
+void HistogramTask::kernelP1U1(const uchar* in, int* sums, uint32_t xstart, uint32_t xend) {
+    for (uint32_t x = xstart; x < xend; x++) {
+        sums[in[0]]++;
+        in++;
+    }
+}
+
+void HistogramTask::collateSums(int* out) {
+    for (uint32_t ct = 0; ct < (256 * paddedSize(mVectorSize)); ct++) {
+        out[ct] = mSums[ct];
+        for (uint32_t t = 1; t < mThreadCount; t++) {
+            out[ct] += mSums[ct + (256 * paddedSize(mVectorSize) * t)];
+        }
+    }
+}
+
+HistogramDotTask::HistogramDotTask(const uchar* in, size_t sizeX, size_t sizeY, size_t vectorSize,
+                                   uint32_t threadCount, const float* coefficients,
+                                   const Restriction* restriction)
+    : Task{sizeX, sizeY, vectorSize, true, restriction}, mIn{in}, mSums(256 * threadCount, 0) {
+    mThreadCount = threadCount;
+
+    if (coefficients == nullptr) {
+        mDot[0] = 0.299f;
+        mDot[1] = 0.587f;
+        mDot[2] = 0.114f;
+        mDot[3] = 0;
+    } else {
+        memcpy(mDot, coefficients, 16);
+    }
     mDotI[0] = (int)((mDot[0] * 256.f) + 0.5f);
     mDotI[1] = (int)((mDot[1] * 256.f) + 0.5f);
     mDotI[2] = (int)((mDot[2] * 256.f) + 0.5f);
     mDotI[3] = (int)((mDot[3] * 256.f) + 0.5f);
 }
 
+void HistogramDotTask::processData(int threadIndex, size_t startX, size_t startY, size_t endX,
+                                   size_t endY) {
+    typedef void (HistogramDotTask::*KernelFunction)(const uchar*, int*, uint32_t, uint32_t);
 
-
-void
-RsdCpuScriptIntrinsicHistogram::preLaunch(uint32_t slot,
-                                          const Allocation ** ains,
-                                          uint32_t inLen, Allocation * aout,
-                                          const void * usr, uint32_t usrLen,
-                                          const RsScriptCall *sc) {
-
-    const uint32_t threads = mCtx->getThreadCount();
-    uint32_t vSize = mAllocOut->getType()->getElement()->getVectorSize();
-
-    switch (slot) {
-    case 0:
-        switch(vSize) {
-        case 1:
-            mRootPtr = &kernelP1U1;
-            break;
-        case 2:
-            mRootPtr = &kernelP1U2;
+    KernelFunction kernel;
+    switch (mVectorSize) {
+        case 4:
+            kernel = &HistogramDotTask::kernelP1L4;
             break;
         case 3:
-            mRootPtr = &kernelP1U3;
-            vSize = 4;
-            break;
-        case 4:
-            mRootPtr = &kernelP1U4;
-            break;
-        }
-        break;
-    case 1:
-        switch(ains[0]->getType()->getElement()->getVectorSize()) {
-        case 1:
-            mRootPtr = &kernelP1L1;
+            kernel = &HistogramDotTask::kernelP1L3;
             break;
         case 2:
-            mRootPtr = &kernelP1L2;
+            kernel = &HistogramDotTask::kernelP1L2;
             break;
-        case 3:
-            mRootPtr = &kernelP1L3;
+        case 1:
+            kernel = &HistogramDotTask::kernelP1L1;
             break;
-        case 4:
-            mRootPtr = &kernelP1L4;
-            break;
+        default:
+            ALOGI("Bad vector size %zd", mVectorSize);
+            return;
+    }
+
+    int* sums = &mSums[256 * threadIndex];
+
+    for (size_t y = startY; y < endY; y++) {
+        const uchar* inPtr = mIn + (mSizeX * y + startX) * paddedSize(mVectorSize);
+        std::invoke(kernel, this, inPtr, sums, startX, endX);
+    }
+}
+
+void HistogramDotTask::kernelP1L4(const uchar* in, int* sums, uint32_t xstart, uint32_t xend) {
+    for (uint32_t x = xstart; x < xend; x++) {
+        int t = (mDotI[0] * in[0]) + (mDotI[1] * in[1]) + (mDotI[2] * in[2]) + (mDotI[3] * in[3]);
+        sums[(t + 0x7f) >> 8]++;
+        in += 4;
+    }
+}
+
+void HistogramDotTask::kernelP1L3(const uchar* in, int* sums, uint32_t xstart, uint32_t xend) {
+    for (uint32_t x = xstart; x < xend; x++) {
+        int t = (mDotI[0] * in[0]) + (mDotI[1] * in[1]) + (mDotI[2] * in[2]);
+        sums[(t + 0x7f) >> 8]++;
+        in += 4;
+    }
+}
+
+void HistogramDotTask::kernelP1L2(const uchar* in, int* sums, uint32_t xstart, uint32_t xend) {
+    for (uint32_t x = xstart; x < xend; x++) {
+        int t = (mDotI[0] * in[0]) + (mDotI[1] * in[1]);
+        sums[(t + 0x7f) >> 8]++;
+        in += 2;
+    }
+}
+
+void HistogramDotTask::kernelP1L1(const uchar* in, int* sums, uint32_t xstart, uint32_t xend) {
+    for (uint32_t x = xstart; x < xend; x++) {
+        int t = (mDotI[0] * in[0]);
+        sums[(t + 0x7f) >> 8]++;
+        in++;
+    }
+}
+
+void HistogramDotTask::collateSums(int* out) {
+    for (uint32_t ct = 0; ct < 256; ct++) {
+        out[ct] = mSums[ct];
+        for (uint32_t t = 1; t < mThreadCount; t++) {
+            out[ct] += mSums[ct + (256 * t)];
         }
-        break;
     }
-    memset(mSums, 0, 256 * sizeof(int32_t) * threads * vSize);
 }
 
-void
-RsdCpuScriptIntrinsicHistogram::postLaunch(uint32_t slot,
-                                           const Allocation ** ains,
-                                           uint32_t inLen,  Allocation * aout,
-                                           const void * usr, uint32_t usrLen,
-                                           const RsScriptCall *sc) {
+////////////////////////////////////////////////////////////////////////////
 
-    unsigned int *o = (unsigned int *)mAllocOut->mHal.drvState.lod[0].mallocPtr;
-    uint32_t threads = mCtx->getThreadCount();
-    uint32_t vSize = mAllocOut->getType()->getElement()->getVectorSize();
+void RenderScriptToolkit::histogram(const uint8_t* in, int32_t* out, size_t sizeX, size_t sizeY,
+                                    size_t vectorSize, const Restriction* restriction) {
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_VALIDATE
+    if (!validRestriction(LOG_TAG, sizeX, sizeY, restriction)) {
+        return;
+    }
+    if (vectorSize < 1 || vectorSize > 4) {
+        ALOGE("The vectorSize should be between 1 and 4. %zu provided.", vectorSize);
+        return;
+    }
+#endif
 
-    if (vSize == 3) vSize = 4;
+    HistogramTask task(in, sizeX, sizeY, vectorSize, processor->getNumberOfThreads(), restriction);
+    processor->doTask(&task);
+    task.collateSums(out);
+}
 
-    for (uint32_t ct=0; ct < (256 * vSize); ct++) {
-        o[ct] = mSums[ct];
-        for (uint32_t t=1; t < threads; t++) {
-            o[ct] += mSums[ct + (256 * vSize * t)];
+void RenderScriptToolkit::histogramDot(const uint8_t* in, int32_t* out, size_t sizeX, size_t sizeY,
+                                       size_t vectorSize, const float* coefficients,
+                                       const Restriction* restriction) {
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_VALIDATE
+    if (!validRestriction(LOG_TAG, sizeX, sizeY, restriction)) {
+        return;
+    }
+    if (vectorSize < 1 || vectorSize > 4) {
+        ALOGE("The vectorSize should be between 1 and 4. %zu provided.", vectorSize);
+        return;
+    }
+    if (coefficients != nullptr) {
+        float sum = 0.0f;
+        for (size_t i = 0; i < vectorSize; i++) {
+            if (coefficients[i] < 0.0f) {
+                ALOGE("histogramDot coefficients should not be negative. Coefficient %zu was %f.",
+                      i, coefficients[i]);
+                return;
+            }
+            sum += coefficients[i];
+        }
+        if (sum > 1.0f) {
+            ALOGE("histogramDot coefficients should add to 1 or less. Their sum is %f.", sum);
+            return;
         }
     }
+#endif
+
+    HistogramDotTask task(in, sizeX, sizeY, vectorSize, processor->getNumberOfThreads(),
+                          coefficients, restriction);
+    processor->doTask(&task);
+    task.collateSums(out);
 }
 
-void RsdCpuScriptIntrinsicHistogram::kernelP1U4(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-
-    RsdCpuScriptIntrinsicHistogram *cp = (RsdCpuScriptIntrinsicHistogram *)info->usr;
-    uchar *in = (uchar *)info->inPtr[0];
-    int * sums = &cp->mSums[256 * 4 * info->lid];
-
-    for (uint32_t x = xstart; x < xend; x++) {
-        sums[(in[0] << 2)    ] ++;
-        sums[(in[1] << 2) + 1] ++;
-        sums[(in[2] << 2) + 2] ++;
-        sums[(in[3] << 2) + 3] ++;
-        in += info->inStride[0];
-    }
-}
-
-void RsdCpuScriptIntrinsicHistogram::kernelP1U3(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-
-    RsdCpuScriptIntrinsicHistogram *cp = (RsdCpuScriptIntrinsicHistogram *)info->usr;
-    uchar *in = (uchar *)info->inPtr[0];
-    int * sums = &cp->mSums[256 * 4 * info->lid];
-
-    for (uint32_t x = xstart; x < xend; x++) {
-        sums[(in[0] << 2)    ] ++;
-        sums[(in[1] << 2) + 1] ++;
-        sums[(in[2] << 2) + 2] ++;
-        in += info->inStride[0];
-    }
-}
-
-void RsdCpuScriptIntrinsicHistogram::kernelP1U2(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-
-    RsdCpuScriptIntrinsicHistogram *cp = (RsdCpuScriptIntrinsicHistogram *)info->usr;
-    uchar *in = (uchar *)info->inPtr[0];
-    int * sums = &cp->mSums[256 * 2 * info->lid];
-
-    for (uint32_t x = xstart; x < xend; x++) {
-        sums[(in[0] << 1)    ] ++;
-        sums[(in[1] << 1) + 1] ++;
-        in += info->inStride[0];
-    }
-}
-
-void RsdCpuScriptIntrinsicHistogram::kernelP1L4(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-
-    RsdCpuScriptIntrinsicHistogram *cp = (RsdCpuScriptIntrinsicHistogram *)info->usr;
-    uchar *in = (uchar *)info->inPtr[0];
-    int * sums = &cp->mSums[256 * info->lid];
-
-    for (uint32_t x = xstart; x < xend; x++) {
-        int t = (cp->mDotI[0] * in[0]) +
-                (cp->mDotI[1] * in[1]) +
-                (cp->mDotI[2] * in[2]) +
-                (cp->mDotI[3] * in[3]);
-        sums[(t + 0x7f) >> 8] ++;
-        in += info->inStride[0];
-    }
-}
-
-void RsdCpuScriptIntrinsicHistogram::kernelP1L3(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-
-    RsdCpuScriptIntrinsicHistogram *cp = (RsdCpuScriptIntrinsicHistogram *)info->usr;
-    uchar *in = (uchar *)info->inPtr[0];
-    int * sums = &cp->mSums[256 * info->lid];
-
-    for (uint32_t x = xstart; x < xend; x++) {
-        int t = (cp->mDotI[0] * in[0]) +
-                (cp->mDotI[1] * in[1]) +
-                (cp->mDotI[2] * in[2]);
-        sums[(t + 0x7f) >> 8] ++;
-        in += info->inStride[0];
-    }
-}
-
-void RsdCpuScriptIntrinsicHistogram::kernelP1L2(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-
-    RsdCpuScriptIntrinsicHistogram *cp = (RsdCpuScriptIntrinsicHistogram *)info->usr;
-    uchar *in = (uchar *)info->inPtr[0];
-    int * sums = &cp->mSums[256 * info->lid];
-
-    for (uint32_t x = xstart; x < xend; x++) {
-        int t = (cp->mDotI[0] * in[0]) +
-                (cp->mDotI[1] * in[1]);
-        sums[(t + 0x7f) >> 8] ++;
-        in += info->inStride[0];
-    }
-}
-
-void RsdCpuScriptIntrinsicHistogram::kernelP1L1(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-
-    RsdCpuScriptIntrinsicHistogram *cp = (RsdCpuScriptIntrinsicHistogram *)info->usr;
-    uchar *in = (uchar *)info->inPtr[0];
-    int * sums = &cp->mSums[256 * info->lid];
-
-    for (uint32_t x = xstart; x < xend; x++) {
-        int t = (cp->mDotI[0] * in[0]);
-        sums[(t + 0x7f) >> 8] ++;
-        in += info->inStride[0];
-    }
-}
-
-void RsdCpuScriptIntrinsicHistogram::kernelP1U1(const RsExpandKernelDriverInfo *info,
-                                                uint32_t xstart, uint32_t xend,
-                                                uint32_t outstep) {
-
-    RsdCpuScriptIntrinsicHistogram *cp = (RsdCpuScriptIntrinsicHistogram *)info->usr;
-    uchar *in = (uchar *)info->inPtr[0];
-    int * sums = &cp->mSums[256 * info->lid];
-
-    for (uint32_t x = xstart; x < xend; x++) {
-        sums[in[0]] ++;
-        in += info->inStride[0];
-    }
-}
-
-
-RsdCpuScriptIntrinsicHistogram::RsdCpuScriptIntrinsicHistogram(RsdCpuReferenceImpl *ctx,
-                                                     const Script *s, const Element *e)
-            : RsdCpuScriptIntrinsic(ctx, s, e, RS_SCRIPT_INTRINSIC_ID_HISTOGRAM) {
-
-    mRootPtr = nullptr;
-    mSums = new int[256 * 4 * mCtx->getThreadCount()];
-    mDot[0] = 0.299f;
-    mDot[1] = 0.587f;
-    mDot[2] = 0.114f;
-    mDot[3] = 0;
-    mDotI[0] = (int)((mDot[0] * 256.f) + 0.5f);
-    mDotI[1] = (int)((mDot[1] * 256.f) + 0.5f);
-    mDotI[2] = (int)((mDot[2] * 256.f) + 0.5f);
-    mDotI[3] = (int)((mDot[3] * 256.f) + 0.5f);
-}
-
-RsdCpuScriptIntrinsicHistogram::~RsdCpuScriptIntrinsicHistogram() {
-    if (mSums) {
-        delete []mSums;
-    }
-}
-
-void RsdCpuScriptIntrinsicHistogram::populateScript(Script *s) {
-    s->mHal.info.exportedVariableCount = 2;
-}
-
-void RsdCpuScriptIntrinsicHistogram::invokeFreeChildren() {
-}
-
-RsdCpuScriptImpl * rsdIntrinsic_Histogram(RsdCpuReferenceImpl *ctx, const Script *s,
-                                          const Element *e) {
-
-    return new RsdCpuScriptIntrinsicHistogram(ctx, s, e);
-}
-
-} // namespace renderscript
-} // namespace android
+}  // namespace renderscript
+}  // namespace android

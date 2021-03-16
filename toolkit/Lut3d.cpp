@@ -14,75 +14,77 @@
  * limitations under the License.
  */
 
+#include <cstdint>
 
-#include "rsCpuIntrinsic.h"
-#include "rsCpuIntrinsicInlines.h"
+#include "RenderScriptToolkit.h"
+#include "TaskProcessor.h"
+#include "Utils.h"
 
 namespace android {
 namespace renderscript {
 
+#define LOG_TAG "renderscript.toolkit.Lut3d"
 
-class RsdCpuScriptIntrinsic3DLUT : public RsdCpuScriptIntrinsic {
-public:
-    void populateScript(Script *) override;
-    void invokeFreeChildren() override;
+/**
+ * Converts a RGBA buffer using a 3D cube.
+ */
+class Lut3dTask : public Task {
+    // The input array we're transforming.
+    const uchar4* mIn;
+    // Where we'll store the transformed result.
+    uchar4* mOut;
+    // The size of each of the three cube dimensions. We don't make use of the last value.
+    int4 mCubeDimension;
+    // The translation cube, in row major format.
+    const uchar* mCubeTable;
 
-    void setGlobalObj(uint32_t slot, ObjectBase *data) override;
+    /**
+     * Converts a subset of a line of the 2D buffer.
+     *
+     * @param in The start of the data to transform.
+     * @param out Where to store the result.
+     * @param length The number of 4-byte vectors to transform.
+     */
+    void kernel(const uchar4* in, uchar4* out, uint32_t length);
 
-    ~RsdCpuScriptIntrinsic3DLUT() override;
-    RsdCpuScriptIntrinsic3DLUT(RsdCpuReferenceImpl *ctx, const Script *s, const Element *e);
+    // Process a 2D tile of the overall work. threadIndex identifies which thread does the work.
+    virtual void processData(int threadIndex, size_t startX, size_t startY, size_t endX,
+                             size_t endY) override;
 
-protected:
-    ObjectBaseRef<Allocation> mLUT;
-
-    static void kernel(const RsExpandKernelDriverInfo *info,
-                       uint32_t xstart, uint32_t xend,
-                       uint32_t outstep);
+   public:
+    Lut3dTask(const uint8_t* input, uint8_t* output, size_t sizeX, size_t sizeY,
+              const uint8_t* cube, int cubeSizeX, int cubeSizeY, int cubeSizeZ,
+              const Restriction* restriction)
+        : Task{sizeX, sizeY, 4, true, restriction},
+          mIn{reinterpret_cast<const uchar4*>(input)},
+          mOut{reinterpret_cast<uchar4*>(output)},
+          mCubeDimension{cubeSizeX, cubeSizeY, cubeSizeZ, 0},
+          mCubeTable{cube} {}
 };
 
-void RsdCpuScriptIntrinsic3DLUT::setGlobalObj(uint32_t slot, ObjectBase *data) {
-    rsAssert(slot == 0);
-    mLUT.set(static_cast<Allocation *>(data));
-}
+extern "C" void rsdIntrinsic3DLUT_K(void* dst, void const* in, size_t count, void const* lut,
+                                    int32_t pitchy, int32_t pitchz, int dimx, int dimy, int dimz);
 
-extern "C" void rsdIntrinsic3DLUT_K(void *dst, void const *in, size_t count,
-                                      void const *lut,
-                                      int32_t pitchy, int32_t pitchz,
-                                      int dimx, int dimy, int dimz);
+void Lut3dTask::kernel(const uchar4* in, uchar4* out, uint32_t length) {
+    uint32_t x1 = 0;
+    uint32_t x2 = length;
 
+    const uchar* bp = mCubeTable;
 
-void RsdCpuScriptIntrinsic3DLUT::kernel(const RsExpandKernelDriverInfo *info,
-                                        uint32_t xstart, uint32_t xend,
-                                        uint32_t outstep) {
-    RsdCpuScriptIntrinsic3DLUT *cp = (RsdCpuScriptIntrinsic3DLUT *)info->usr;
+    int4 dims = mCubeDimension - 1;
 
-    uchar4 *out = (uchar4 *)info->outPtr[0];
-    uchar4 *in = (uchar4 *)info->inPtr[0];
-    uint32_t x1 = xstart;
-    uint32_t x2 = xend;
+    const float4 m = (float4)(1.f / 255.f) * convert<float4>(dims);
+    const int4 coordMul = convert<int4>(m * (float4)0x8000);
+    const size_t stride_y = mCubeDimension.x * 4;
+    const size_t stride_z = stride_y * mCubeDimension.y;
 
-    const uchar *bp = (const uchar *)cp->mLUT->mHal.drvState.lod[0].mallocPtr;
-
-    int4 dims = {
-        static_cast<int>(cp->mLUT->mHal.drvState.lod[0].dimX - 1),
-        static_cast<int>(cp->mLUT->mHal.drvState.lod[0].dimY - 1),
-        static_cast<int>(cp->mLUT->mHal.drvState.lod[0].dimZ - 1),
-        -1
-    };
-    const float4 m = (float4)(1.f / 255.f) * convert_float4(dims);
-    const int4 coordMul = convert_int4(m * (float4)0x8000);
-    const size_t stride_y = cp->mLUT->mHal.drvState.lod[0].stride;
-    const size_t stride_z = stride_y * cp->mLUT->mHal.drvState.lod[0].dimY;
-
-    //ALOGE("strides %zu %zu", stride_y, stride_z);
+    // ALOGE("strides %zu %zu", stride_y, stride_z);
 
 #if defined(ARCH_ARM_USE_INTRINSICS)
-    if (gArchUseSIMD) {
+    if (mUsesSimd) {
         int32_t len = x2 - x1;
-        if(len > 0) {
-            rsdIntrinsic3DLUT_K(out, in, len,
-                                bp, stride_y, stride_z,
-                                dims.x, dims.y, dims.z);
+        if (len > 0) {
+            rsdIntrinsic3DLUT_K(out, in, len, bp, stride_y, stride_z, dims.x, dims.y, dims.z);
             x1 += len;
             out += len;
             in += len;
@@ -91,28 +93,28 @@ void RsdCpuScriptIntrinsic3DLUT::kernel(const RsExpandKernelDriverInfo *info,
 #endif
 
     while (x1 < x2) {
-        int4 baseCoord = convert_int4(*in) * coordMul;
+        int4 baseCoord = convert<int4>(*in) * coordMul;
         int4 coord1 = baseCoord >> (int4)15;
-        //int4 coord2 = min(coord1 + 1, gDims - 1);
+        // int4 coord2 = min(coord1 + 1, gDims - 1);
 
         int4 weight2 = baseCoord & 0x7fff;
         int4 weight1 = (int4)0x8000 - weight2;
 
-        //ALOGE("coord1      %08x %08x %08x %08x", coord1.x, coord1.y, coord1.z, coord1.w);
-        const uchar *bp2 = bp + (coord1.x * 4) + (coord1.y * stride_y) + (coord1.z * stride_z);
-        const uchar4 *pt_00 = (const uchar4 *)&bp2[0];
-        const uchar4 *pt_10 = (const uchar4 *)&bp2[stride_y];
-        const uchar4 *pt_01 = (const uchar4 *)&bp2[stride_z];
-        const uchar4 *pt_11 = (const uchar4 *)&bp2[stride_y + stride_z];
+        // ALOGE("coord1      %08x %08x %08x %08x", coord1.x, coord1.y, coord1.z, coord1.w);
+        const uchar* bp2 = bp + (coord1.x * 4) + (coord1.y * stride_y) + (coord1.z * stride_z);
+        const uchar4* pt_00 = (const uchar4*)&bp2[0];
+        const uchar4* pt_10 = (const uchar4*)&bp2[stride_y];
+        const uchar4* pt_01 = (const uchar4*)&bp2[stride_z];
+        const uchar4* pt_11 = (const uchar4*)&bp2[stride_y + stride_z];
 
-        uint4 v000 = convert_uint4(pt_00[0]);
-        uint4 v100 = convert_uint4(pt_00[1]);
-        uint4 v010 = convert_uint4(pt_10[0]);
-        uint4 v110 = convert_uint4(pt_10[1]);
-        uint4 v001 = convert_uint4(pt_01[0]);
-        uint4 v101 = convert_uint4(pt_01[1]);
-        uint4 v011 = convert_uint4(pt_11[0]);
-        uint4 v111 = convert_uint4(pt_11[1]);
+        uint4 v000 = convert<uint4>(pt_00[0]);
+        uint4 v100 = convert<uint4>(pt_00[1]);
+        uint4 v010 = convert<uint4>(pt_10[0]);
+        uint4 v110 = convert<uint4>(pt_10[1]);
+        uint4 v001 = convert<uint4>(pt_01[0]);
+        uint4 v101 = convert<uint4>(pt_01[1]);
+        uint4 v011 = convert<uint4>(pt_11[0]);
+        uint4 v111 = convert<uint4>(pt_11[1]);
 
         uint4 yz00 = ((v000 * weight1.x) + (v100 * weight2.x)) >> (int4)7;
         uint4 yz10 = ((v010 * weight1.x) + (v110 * weight2.x)) >> (int4)7;
@@ -125,10 +127,10 @@ void RsdCpuScriptIntrinsic3DLUT::kernel(const RsExpandKernelDriverInfo *info,
         uint4 v = ((z0 * weight1.z) + (z1 * weight2.z)) >> (int4)15;
         uint4 v2 = (v + 0x7f) >> (int4)8;
 
-        uchar4 ret = convert_uchar4(v2);
+        uchar4 ret = convert<uchar4>(v2);
         ret.w = in->w;
 
-        #if 0
+#if 0
         if (!x1) {
             ALOGE("in          %08x %08x %08x %08x", in->r, in->g, in->b, in->a);
             ALOGE("baseCoord   %08x %08x %08x %08x", baseCoord.x, baseCoord.y, baseCoord.z,
@@ -145,9 +147,8 @@ void RsdCpuScriptIntrinsic3DLUT::kernel(const RsExpandKernelDriverInfo *info,
             ALOGE("v           %08x %08x %08x %08x", v.x, v.y, v.z, v.w);
             ALOGE("v2          %08x %08x %08x %08x", v2.x, v2.y, v2.z, v2.w);
         }
-        #endif
+#endif
         *out = ret;
-
 
         in++;
         out++;
@@ -155,29 +156,26 @@ void RsdCpuScriptIntrinsic3DLUT::kernel(const RsExpandKernelDriverInfo *info,
     }
 }
 
-RsdCpuScriptIntrinsic3DLUT::RsdCpuScriptIntrinsic3DLUT(
-    RsdCpuReferenceImpl *ctx, const Script *s, const Element *e) :
-        RsdCpuScriptIntrinsic(ctx, s, e, RS_SCRIPT_INTRINSIC_ID_3DLUT) {
-
-    mRootPtr = &kernel;
+void Lut3dTask::processData(int /* threadIndex */, size_t startX, size_t startY, size_t endX,
+                            size_t endY) {
+    for (size_t y = startY; y < endY; y++) {
+        size_t offset = mSizeX * y + startX;
+        kernel(mIn + offset, mOut + offset, endX - startX);
+    }
 }
 
-RsdCpuScriptIntrinsic3DLUT::~RsdCpuScriptIntrinsic3DLUT() {
+void RenderScriptToolkit::lut3d(const uint8_t* input, uint8_t* output, size_t sizeX, size_t sizeY,
+                                const uint8_t* cube, size_t cubeSizeX, size_t cubeSizeY,
+                                size_t cubeSizeZ, const Restriction* restriction) {
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_VALIDATE
+    if (!validRestriction(LOG_TAG, sizeX, sizeY, restriction)) {
+        return;
+    }
+#endif
+
+    Lut3dTask task(input, output, sizeX, sizeY, cube, cubeSizeX, cubeSizeY, cubeSizeZ, restriction);
+    processor->doTask(&task);
 }
 
-void RsdCpuScriptIntrinsic3DLUT::populateScript(Script *s) {
-    s->mHal.info.exportedVariableCount = 1;
-}
-
-void RsdCpuScriptIntrinsic3DLUT::invokeFreeChildren() {
-    mLUT.clear();
-}
-
-RsdCpuScriptImpl * rsdIntrinsic_3DLUT(RsdCpuReferenceImpl *ctx,
-                                    const Script *s, const Element *e) {
-
-    return new RsdCpuScriptIntrinsic3DLUT(ctx, s, e);
-}
-
-} // namespace renderscript
-} // namespace android
+}  // namespace renderscript
+}  // namespace android

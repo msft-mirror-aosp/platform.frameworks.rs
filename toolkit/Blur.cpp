@@ -14,53 +14,83 @@
  * limitations under the License.
  */
 
-#include "rsCpuIntrinsic.h"
-#include "rsCpuIntrinsicInlines.h"
+#include <math.h>
+
+#include <cstdint>
+
+#include "RenderScriptToolkit.h"
+#include "TaskProcessor.h"
+#include "Utils.h"
 
 namespace android {
 namespace renderscript {
 
-class RsdCpuScriptIntrinsicBlur : public RsdCpuScriptIntrinsic {
-public:
-    void populateScript(Script *) override;
-    void invokeFreeChildren() override;
+#define LOG_TAG "renderscript.toolkit.Blur"
 
-    void setGlobalVar(uint32_t slot, const void *data, size_t dataLength) override;
-    void setGlobalObj(uint32_t slot, ObjectBase *data) override;
-
-    ~RsdCpuScriptIntrinsicBlur() override;
-    RsdCpuScriptIntrinsicBlur(RsdCpuReferenceImpl *ctx, const Script *s, const Element *e);
-
-protected:
+/**
+ * Blurs an image or a section of an image.
+ *
+ * Our algorithm does two passes: a vertical blur followed by an horizontal blur.
+ */
+class BlurTask : public Task {
+    // The image we're blurring.
+    const uchar* mIn;
+    // Where we store the blurred image.
+    uchar* outArray;
     // The size of the kernel radius is limited to 25 in ScriptIntrinsicBlur.java.
     // So, the max kernel size is 51 (= 2 * 25 + 1).
     // Considering SSSE3 case, which requires the size is multiple of 4,
     // at least 52 words are necessary. Values outside of the kernel should be 0.
     float mFp[104];
     uint16_t mIp[104];
-    void **mScratch;
-    size_t *mScratchSize;
+
+    // Working area to store the result of the vertical blur, to be used by the horizontal pass.
+    // There's one area per thread. Since the needed working area may be too large to put on the
+    // stack, we are allocating it from the heap. To avoid paying the allocation cost for each
+    // tile, we cache the scratch area here.
+    std::vector<void*> mScratch;       // Pointers to the scratch areas, one per thread.
+    std::vector<size_t> mScratchSize;  // The size in bytes of the scratch areas, one per thread.
+
+    // The radius of the blur, in floating point and integer format.
     float mRadius;
     int mIradius;
-    ObjectBaseRef<Allocation> mAlloc;
 
-    static void kernelU4(const RsExpandKernelDriverInfo *info,
-                         uint32_t xstart, uint32_t xend,
-                         uint32_t outstep);
-    static void kernelU1(const RsExpandKernelDriverInfo *info,
-                         uint32_t xstart, uint32_t xend,
-                         uint32_t outstep);
+    void kernelU4(void* outPtr, uint32_t xstart, uint32_t xend, uint32_t currentY,
+                  uint32_t threadIndex);
+    void kernelU1(void* outPtr, uint32_t xstart, uint32_t xend, uint32_t currentY);
     void ComputeGaussianWeights();
+
+    // Process a 2D tile of the overall work. threadIndex identifies which thread does the work.
+    virtual void processData(int threadIndex, size_t startX, size_t startY, size_t endX,
+                             size_t endY) override;
+
+   public:
+    BlurTask(const uint8_t* in, uint8_t* out, size_t sizeX, size_t sizeY, size_t vectorSize,
+             uint32_t threadCount, float radius, const Restriction* restriction)
+        : Task{sizeX, sizeY, vectorSize, false, restriction},
+          mIn{in},
+          outArray{out},
+          mScratch{threadCount},
+          mScratchSize{threadCount},
+          mRadius{std::min(25.0f, radius)} {
+        ComputeGaussianWeights();
+    }
+
+    ~BlurTask() {
+        for (size_t i = 0; i < mScratch.size(); i++) {
+            if (mScratch[i]) {
+                free(mScratch[i]);
+            }
+        }
+    }
 };
 
-
-void RsdCpuScriptIntrinsicBlur::ComputeGaussianWeights() {
+void BlurTask::ComputeGaussianWeights() {
     memset(mFp, 0, sizeof(mFp));
     memset(mIp, 0, sizeof(mIp));
 
     // Compute gaussian weights for the blur
     // e is the euler's number
-    // TODO Define these constants only once
     float e = 2.718281828459045f;
     float pi = 3.1415926535897932f;
     // g(x) = (1 / (sqrt(2 * pi) * sigma)) * e ^ (-x^2 / (2 * sigma^2))
@@ -97,30 +127,28 @@ void RsdCpuScriptIntrinsicBlur::ComputeGaussianWeights() {
     }
 }
 
-void RsdCpuScriptIntrinsicBlur::setGlobalObj(uint32_t slot, ObjectBase *data) {
-    rsAssert(slot == 1);
-    mAlloc.set(static_cast<Allocation *>(data));
-}
-
-void RsdCpuScriptIntrinsicBlur::setGlobalVar(uint32_t slot, const void *data, size_t dataLength) {
-    rsAssert(slot == 0);
-    mRadius = ((const float *)data)[0];
-    ComputeGaussianWeights();
-}
-
-
-
-static void OneVU4(const RsExpandKernelDriverInfo *info, float4 *out, int32_t x, int32_t y,
-                   const uchar *ptrIn, int iStride, const float* gPtr, int iradius) {
-
+/**
+ * Vertical blur of a uchar4 line.
+ *
+ * @param sizeY Number of cells of the input array in the vertical direction.
+ * @param out Where to place the computed value.
+ * @param x Coordinate of the point we're blurring.
+ * @param y Coordinate of the point we're blurring.
+ * @param ptrIn Start of the input array.
+ * @param iStride The size in byte of a row of the input array.
+ * @param gPtr The gaussian coefficients.
+ * @param iradius The radius of the blur.
+ */
+static void OneVU4(uint32_t sizeY, float4* out, int32_t x, int32_t y, const uchar* ptrIn,
+                   int iStride, const float* gPtr, int iradius) {
     const uchar *pi = ptrIn + x*4;
 
     float4 blurredPixel = 0;
     for (int r = -iradius; r <= iradius; r ++) {
-        int validY = rsMax((y + r), 0);
-        validY = rsMin(validY, (int)(info->dim.y- 1));
+        int validY = std::max((y + r), 0);
+        validY = std::min(validY, (int)(sizeY - 1));
         const uchar4 *pvy = (const uchar4 *)&pi[validY * iStride];
-        float4 pf = convert_float4(pvy[0]);
+        float4 pf = convert<float4>(pvy[0]);
         blurredPixel += pf * gPtr[0];
         gPtr++;
     }
@@ -128,15 +156,27 @@ static void OneVU4(const RsExpandKernelDriverInfo *info, float4 *out, int32_t x,
     out[0] = blurredPixel;
 }
 
-static void OneVU1(const RsExpandKernelDriverInfo *info, float *out, int32_t x, int32_t y,
+/**
+ * Vertical blur of a uchar1 line.
+ *
+ * @param sizeY Number of cells of the input array in the vertical direction.
+ * @param out Where to place the computed value.
+ * @param x Coordinate of the point we're blurring.
+ * @param y Coordinate of the point we're blurring.
+ * @param ptrIn Start of the input array.
+ * @param iStride The size in byte of a row of the input array.
+ * @param gPtr The gaussian coefficients.
+ * @param iradius The radius of the blur.
+ */
+static void OneVU1(uint32_t sizeY, float *out, int32_t x, int32_t y,
                    const uchar *ptrIn, int iStride, const float* gPtr, int iradius) {
 
     const uchar *pi = ptrIn + x;
 
     float blurredPixel = 0;
     for (int r = -iradius; r <= iradius; r ++) {
-        int validY = rsMax((y + r), 0);
-        validY = rsMin(validY, (int)(info->dim.y - 1));
+        int validY = std::max((y + r), 0);
+        validY = std::min(validY, (int)(sizeY - 1));
         float pf = (float)pi[validY * iStride];
         blurredPixel += pf * gPtr[0];
         gPtr++;
@@ -144,9 +184,6 @@ static void OneVU1(const RsExpandKernelDriverInfo *info, float *out, int32_t x, 
 
     out[0] = blurredPixel;
 }
-
-} // namespace renderscript
-} // namespace android
 
 
 extern "C" void rsdIntrinsicBlurU1_K(uchar *out, uchar const *in, size_t w, size_t h,
@@ -163,14 +200,23 @@ extern void rsdIntrinsicBlurHFU1_K(void *dst, const void *pin, const void *gptr,
                                    int ct);
 #endif
 
-using android::renderscript::gArchUseSIMD;
-
-static void OneVFU4(float4 *out,
-                    const uchar *ptrIn, int iStride, const float* gPtr, int ct,
-                    int x1, int x2) {
-    out += x1;
+/**
+ * Vertical blur of a line of RGBA, knowing that there's enough rows above and below us to avoid
+ * dealing with boundary conditions.
+ *
+ * @param out Where to store the results. This is the input to the horizontal blur.
+ * @param ptrIn The input data for this line.
+ * @param iStride The width of the input.
+ * @param gPtr The gaussian coefficients.
+ * @param ct The diameter of the blur.
+ * @param len How many cells to blur.
+ * @param usesSimd Whether this processor supports SIMD.
+ */
+static void OneVFU4(float4 *out, const uchar *ptrIn, int iStride, const float* gPtr, int ct,
+                    int x2, bool usesSimd) {
+    int x1 = 0;
 #if defined(ARCH_X86_HAVE_SSSE3)
-    if (gArchUseSIMD) {
+    if (usesSimd) {
         int t = (x2 - x1);
         t &= ~1;
         if (t) {
@@ -180,6 +226,8 @@ static void OneVFU4(float4 *out,
         out += t;
         ptrIn += t << 2;
     }
+#else
+    (void) usesSimd; // Avoid unused parameter warning.
 #endif
     while(x2 > x1) {
         const uchar *pi = ptrIn;
@@ -187,7 +235,7 @@ static void OneVFU4(float4 *out,
         const float* gp = gPtr;
 
         for (int r = 0; r < ct; r++) {
-            float4 pf = convert_float4(((const uchar4 *)pi)[0]);
+            float4 pf = convert<float4>(((const uchar4 *)pi)[0]);
             blurredPixel += pf * gp[0];
             pi += iStride;
             gp++;
@@ -199,13 +247,23 @@ static void OneVFU4(float4 *out,
     }
 }
 
-static void OneVFU1(float *out,
-                    const uchar *ptrIn, int iStride, const float* gPtr, int ct, int x1, int x2) {
+/**
+ * Vertical blur of a line of U_8, knowing that there's enough rows above and below us to avoid
+ * dealing with boundary conditions.
+ *
+ * @param out Where to store the results. This is the input to the horizontal blur.
+ * @param ptrIn The input data for this line.
+ * @param iStride The width of the input.
+ * @param gPtr The gaussian coefficients.
+ * @param ct The diameter of the blur.
+ * @param len How many cells to blur.
+ * @param usesSimd Whether this processor supports SIMD.
+ */
+static void OneVFU1(float* out, const uchar* ptrIn, int iStride, const float* gPtr, int ct, int len,
+                    bool usesSimd) {
+    int x1 = 0;
 
-    int len = x2 - x1;
-    out += x1;
-
-    while((x2 > x1) && (((uintptr_t)ptrIn) & 0x3)) {
+    while((len > x1) && (((uintptr_t)ptrIn) & 0x3)) {
         const uchar *pi = ptrIn;
         float blurredPixel = 0;
         const float* gp = gPtr;
@@ -223,8 +281,8 @@ static void OneVFU1(float *out,
         len--;
     }
 #if defined(ARCH_X86_HAVE_SSSE3)
-    if (gArchUseSIMD && (x2 > x1)) {
-        int t = (x2 - x1) >> 2;
+    if (usesSimd && (len > x1)) {
+        int t = (len - x1) >> 2;
         t &= ~1;
         if (t) {
             rsdIntrinsicBlurVFU4_K(out, ptrIn, iStride, gPtr, ct, 0, t );
@@ -233,6 +291,8 @@ static void OneVFU1(float *out,
             out += t << 2;
         }
     }
+#else
+    (void) usesSimd; // Avoid unused parameter warning.
 #endif
     while(len > 0) {
         const uchar *pi = ptrIn;
@@ -252,31 +312,46 @@ static void OneVFU1(float *out,
     }
 }
 
-using android::renderscript::rsMin;
-using android::renderscript::rsMax;
-
-static void OneHU4(const RsExpandKernelDriverInfo *info, uchar4 *out, int32_t x,
-                   const float4 *ptrIn, const float* gPtr, int iradius) {
-
+/**
+ * Horizontal blur of a uchar4 line.
+ *
+ * @param sizeX Number of cells of the input array in the horizontal direction.
+ * @param out Where to place the computed value.
+ * @param x Coordinate of the point we're blurring.
+ * @param ptrIn The start of the input row from which we're indexing x.
+ * @param gPtr The gaussian coefficients.
+ * @param iradius The radius of the blur.
+ */
+static void OneHU4(uint32_t sizeX, uchar4* out, int32_t x, const float4* ptrIn, const float* gPtr,
+                   int iradius) {
     float4 blurredPixel = 0;
     for (int r = -iradius; r <= iradius; r ++) {
-        int validX = rsMax((x + r), 0);
-        validX = rsMin(validX, (int)(info->dim.x - 1));
+        int validX = std::max((x + r), 0);
+        validX = std::min(validX, (int)(sizeX - 1));
         float4 pf = ptrIn[validX];
         blurredPixel += pf * gPtr[0];
         gPtr++;
     }
 
-    out->xyzw = convert_uchar4(blurredPixel);
+    out->xyzw = convert<uchar4>(blurredPixel);
 }
 
-static void OneHU1(const RsExpandKernelDriverInfo *info, uchar *out, int32_t x,
-                   const float *ptrIn, const float* gPtr, int iradius) {
-
+/**
+ * Horizontal blur of a uchar line.
+ *
+ * @param sizeX Number of cells of the input array in the horizontal direction.
+ * @param out Where to place the computed value.
+ * @param x Coordinate of the point we're blurring.
+ * @param ptrIn The start of the input row from which we're indexing x.
+ * @param gPtr The gaussian coefficients.
+ * @param iradius The radius of the blur.
+ */
+static void OneHU1(uint32_t sizeX, uchar* out, int32_t x, const float* ptrIn, const float* gPtr,
+                   int iradius) {
     float blurredPixel = 0;
     for (int r = -iradius; r <= iradius; r ++) {
-        int validX = rsMax((x + r), 0);
-        validX = rsMin(validX, (int)(info->dim.x - 1));
+        int validX = std::max((x + r), 0);
+        validX = std::min(validX, (int)(sizeX - 1));
         float pf = ptrIn[validX];
         blurredPixel += pf * gPtr[0];
         gPtr++;
@@ -285,121 +360,118 @@ static void OneHU1(const RsExpandKernelDriverInfo *info, uchar *out, int32_t x,
     out[0] = (uchar)blurredPixel;
 }
 
-
-namespace android {
-namespace renderscript {
-
-void RsdCpuScriptIntrinsicBlur::kernelU4(const RsExpandKernelDriverInfo *info,
-                                         uint32_t xstart, uint32_t xend,
-                                         uint32_t outstep) {
-
+/**
+ * Full blur of a line of RGBA data.
+ *
+ * @param outPtr Where to store the results
+ * @param xstart The index of the section we're starting to blur.
+ * @param xend  The end index of the section.
+ * @param currentY The index of the line we're blurring.
+ * @param usesSimd Whether this processor supports SIMD.
+ */
+void BlurTask::kernelU4(void *outPtr, uint32_t xstart, uint32_t xend, uint32_t currentY,
+                        uint32_t threadIndex) {
     float4 stackbuf[2048];
     float4 *buf = &stackbuf[0];
-    RsdCpuScriptIntrinsicBlur *cp = (RsdCpuScriptIntrinsicBlur *)info->usr;
-    if (!cp->mAlloc.get()) {
-        ALOGE("Blur executed without input, skipping");
-        return;
-    }
-    const uchar *pin = (const uchar *)cp->mAlloc->mHal.drvState.lod[0].mallocPtr;
-    const size_t stride = cp->mAlloc->mHal.drvState.lod[0].stride;
+    const uint32_t stride = mSizeX * mVectorSize;
 
-    uchar4 *out = (uchar4 *)info->outPtr[0];
+    uchar4 *out = (uchar4 *)outPtr;
     uint32_t x1 = xstart;
     uint32_t x2 = xend;
 
 #if defined(ARCH_ARM_USE_INTRINSICS)
-    if (gArchUseSIMD && info->dim.x >= 4) {
-      rsdIntrinsicBlurU4_K(out, (uchar4 const *)(pin + stride * info->current.y),
-                 info->dim.x, info->dim.y,
-                 stride, x1, info->current.y, x2 - x1, cp->mIradius, cp->mIp + cp->mIradius);
+    if (mUsesSimd && mSizeX >= 4) {
+      rsdIntrinsicBlurU4_K(out, (uchar4 const *)(mIn + stride * currentY),
+                 mSizeX, mSizeY,
+                 stride, x1, currentY, x2 - x1, mIradius, mIp + mIradius);
         return;
     }
 #endif
 
-    if (info->dim.x > 2048) {
-        if ((info->dim.x > cp->mScratchSize[info->lid]) || !cp->mScratch[info->lid]) {
+    if (mSizeX > 2048) {
+        if ((mSizeX > mScratchSize[threadIndex]) || !mScratch[threadIndex]) {
             // Pad the side of the allocation by one unit to allow alignment later
-            cp->mScratch[info->lid] = realloc(cp->mScratch[info->lid], (info->dim.x + 1) * 16);
-            cp->mScratchSize[info->lid] = info->dim.x;
+            mScratch[threadIndex] = realloc(mScratch[threadIndex], (mSizeX + 1) * 16);
+            mScratchSize[threadIndex] = mSizeX;
         }
         // realloc only aligns to 8 bytes so we manually align to 16.
-        buf = (float4 *) ((((intptr_t)cp->mScratch[info->lid]) + 15) & ~0xf);
+        buf = (float4 *) ((((intptr_t)mScratch[threadIndex]) + 15) & ~0xf);
     }
     float4 *fout = (float4 *)buf;
-    int y = info->current.y;
-    if ((y > cp->mIradius) && (y < ((int)info->dim.y - cp->mIradius))) {
-        const uchar *pi = pin + (y - cp->mIradius) * stride;
-        OneVFU4(fout, pi, stride, cp->mFp, cp->mIradius * 2 + 1, 0, info->dim.x);
+    int y = currentY;
+    if ((y > mIradius) && (y < ((int)mSizeY - mIradius))) {
+        const uchar *pi = mIn + (y - mIradius) * stride;
+        OneVFU4(fout, pi, stride, mFp, mIradius * 2 + 1, mSizeX, mUsesSimd);
     } else {
         x1 = 0;
-        while(info->dim.x > x1) {
-            OneVU4(info, fout, x1, y, pin, stride, cp->mFp, cp->mIradius);
+        while(mSizeX > x1) {
+            OneVU4(mSizeY, fout, x1, y, mIn, stride, mFp, mIradius);
             fout++;
             x1++;
         }
     }
 
     x1 = xstart;
-    while ((x1 < (uint32_t)cp->mIradius) && (x1 < x2)) {
-        OneHU4(info, out, x1, buf, cp->mFp, cp->mIradius);
+    while ((x1 < (uint32_t)mIradius) && (x1 < x2)) {
+        OneHU4(mSizeX, out, x1, buf, mFp, mIradius);
         out++;
         x1++;
     }
 #if defined(ARCH_X86_HAVE_SSSE3)
-    if (gArchUseSIMD) {
-        if ((x1 + cp->mIradius) < x2) {
-            rsdIntrinsicBlurHFU4_K(out, buf - cp->mIradius, cp->mFp,
-                                   cp->mIradius * 2 + 1, x1, x2 - cp->mIradius);
-            out += (x2 - cp->mIradius) - x1;
-            x1 = x2 - cp->mIradius;
+    if (usesSimd) {
+        if ((x1 + mIradius) < x2) {
+            rsdIntrinsicBlurHFU4_K(out, buf - mIradius, mFp,
+                                   mIradius * 2 + 1, x1, x2 - mIradius);
+            out += (x2 - mIradius) - x1;
+            x1 = x2 - mIradius;
         }
     }
 #endif
     while(x2 > x1) {
-        OneHU4(info, out, x1, buf, cp->mFp, cp->mIradius);
+        OneHU4(mSizeX, out, x1, buf, mFp, mIradius);
         out++;
         x1++;
     }
 }
 
-void RsdCpuScriptIntrinsicBlur::kernelU1(const RsExpandKernelDriverInfo *info,
-                                         uint32_t xstart, uint32_t xend,
-                                         uint32_t outstep) {
+/**
+ * Full blur of a line of U_8 data.
+ *
+ * @param outPtr Where to store the results
+ * @param xstart The index of the section we're starting to blur.
+ * @param xend  The end index of the section.
+ * @param currentY The index of the line we're blurring.
+ */
+void BlurTask::kernelU1(void *outPtr, uint32_t xstart, uint32_t xend, uint32_t currentY) {
     float buf[4 * 2048];
-    RsdCpuScriptIntrinsicBlur *cp = (RsdCpuScriptIntrinsicBlur *)info->usr;
-    if (!cp->mAlloc.get()) {
-        ALOGE("Blur executed without input, skipping");
-        return;
-    }
-    const uchar *pin = (const uchar *)cp->mAlloc->mHal.drvState.lod[0].mallocPtr;
-    const size_t stride = cp->mAlloc->mHal.drvState.lod[0].stride;
+    const uint32_t stride = mSizeX * mVectorSize;
 
-    uchar *out = (uchar *)info->outPtr[0];
+    uchar *out = (uchar *)outPtr;
     uint32_t x1 = xstart;
     uint32_t x2 = xend;
 
 #if defined(ARCH_ARM_USE_INTRINSICS)
-    if (gArchUseSIMD && info->dim.x >= 16) {
+    if (mUsesSimd && mSizeX >= 16) {
         // The specialisation for r<=8 has an awkward prefill case, which is
         // fiddly to resolve, where starting close to the right edge can cause
         // a read beyond the end of input.  So avoid that case here.
-        if (cp->mIradius > 8 || (info->dim.x - rsMax(0, (int32_t)x1 - 8)) >= 16) {
-            rsdIntrinsicBlurU1_K(out, pin + stride * info->current.y, info->dim.x, info->dim.y,
-                     stride, x1, info->current.y, x2 - x1, cp->mIradius, cp->mIp + cp->mIradius);
+        if (mIradius > 8 || (mSizeX - std::max(0, (int32_t)x1 - 8)) >= 16) {
+            rsdIntrinsicBlurU1_K(out, mIn + stride * currentY, mSizeX, mSizeY,
+                     stride, x1, currentY, x2 - x1, mIradius, mIp + mIradius);
             return;
         }
     }
 #endif
 
     float *fout = (float *)buf;
-    int y = info->current.y;
-    if ((y > cp->mIradius) && (y < ((int)info->dim.y - cp->mIradius -1))) {
-        const uchar *pi = pin + (y - cp->mIradius) * stride;
-        OneVFU1(fout, pi, stride, cp->mFp, cp->mIradius * 2 + 1, 0, info->dim.x);
+    int y = currentY;
+    if ((y > mIradius) && (y < ((int)mSizeY - mIradius -1))) {
+        const uchar *pi = mIn + (y - mIradius) * stride;
+        OneVFU1(fout, pi, stride, mFp, mIradius * 2 + 1, mSizeX, mUsesSimd);
     } else {
         x1 = 0;
-        while(info->dim.x > x1) {
-            OneVU1(info, fout, x1, y, pin, stride, cp->mFp, cp->mIradius);
+        while(mSizeX > x1) {
+            OneVU1(mSizeY, fout, x1, y, mIn, stride, mFp, mIradius);
             fout++;
             x1++;
         }
@@ -407,15 +479,15 @@ void RsdCpuScriptIntrinsicBlur::kernelU1(const RsExpandKernelDriverInfo *info,
 
     x1 = xstart;
     while ((x1 < x2) &&
-           ((x1 < (uint32_t)cp->mIradius) || (((uintptr_t)out) & 0x3))) {
-        OneHU1(info, out, x1, buf, cp->mFp, cp->mIradius);
+           ((x1 < (uint32_t)mIradius) || (((uintptr_t)out) & 0x3))) {
+        OneHU1(mSizeX, out, x1, buf, mFp, mIradius);
         out++;
         x1++;
     }
 #if defined(ARCH_X86_HAVE_SSSE3)
-    if (gArchUseSIMD) {
-        if ((x1 + cp->mIradius) < x2) {
-            uint32_t len = x2 - (x1 + cp->mIradius);
+    if (cpuSupportsSimd) {
+        if ((x1 + mIradius) < x2) {
+            uint32_t len = x2 - (x1 + mIradius);
             len &= ~3;
 
             // rsdIntrinsicBlurHFU1_K() processes each four float values in |buf| at once, so it
@@ -423,8 +495,8 @@ void RsdCpuScriptIntrinsicBlur::kernelU1(const RsExpandKernelDriverInfo *info,
             // uninitialized buffer.
             if (len > 4) {
                 len -= 4;
-                rsdIntrinsicBlurHFU1_K(out, ((float *)buf) - cp->mIradius, cp->mFp,
-                                       cp->mIradius * 2 + 1, x1, x1 + len);
+                rsdIntrinsicBlurHFU1_K(out, ((float *)buf) - mIradius, mFp,
+                                       mIradius * 2 + 1, x1, x1 + len);
                 out += len;
                 x1 += len;
             }
@@ -432,65 +504,42 @@ void RsdCpuScriptIntrinsicBlur::kernelU1(const RsExpandKernelDriverInfo *info,
     }
 #endif
     while(x2 > x1) {
-        OneHU1(info, out, x1, buf, cp->mFp, cp->mIradius);
+        OneHU1(mSizeX, out, x1, buf, mFp, mIradius);
         out++;
         x1++;
     }
 }
 
-RsdCpuScriptIntrinsicBlur::RsdCpuScriptIntrinsicBlur(RsdCpuReferenceImpl *ctx,
-                                                     const Script *s, const Element *e)
-            : RsdCpuScriptIntrinsic(ctx, s, e, RS_SCRIPT_INTRINSIC_ID_BLUR) {
-
-    mRootPtr = nullptr;
-    if (e->getType() == RS_TYPE_UNSIGNED_8) {
-        switch (e->getVectorSize()) {
-        case 1:
-            mRootPtr = &kernelU1;
-            break;
-        case 4:
-            mRootPtr = &kernelU4;
-            break;
+void BlurTask::processData(int threadIndex, size_t startX, size_t startY, size_t endX,
+                           size_t endY) {
+    for (size_t y = startY; y < endY; y++) {
+        void* outPtr = outArray + (mSizeX * y + startX) * mVectorSize;
+        if (mVectorSize == 4) {
+            kernelU4(outPtr, startX, endX, y, threadIndex);
+        } else {
+            kernelU1(outPtr, startX, endX, y);
         }
     }
-    rsAssert(mRootPtr);
-    mRadius = 5;
-
-    mScratch = new void *[mCtx->getThreadCount()];
-    mScratchSize = new size_t[mCtx->getThreadCount()];
-    memset(mScratch, 0, sizeof(void *) * mCtx->getThreadCount());
-    memset(mScratchSize, 0, sizeof(size_t) * mCtx->getThreadCount());
-
-    ComputeGaussianWeights();
 }
 
-RsdCpuScriptIntrinsicBlur::~RsdCpuScriptIntrinsicBlur() {
-    uint32_t threads = mCtx->getThreadCount();
-    if (mScratch) {
-        for (size_t i = 0; i < threads; i++) {
-            if (mScratch[i]) {
-                free(mScratch[i]);
-            }
-        }
-        delete []mScratch;
+void RenderScriptToolkit::blur(const uint8_t* in, uint8_t* out, size_t sizeX, size_t sizeY,
+                               size_t vectorSize, int radius, const Restriction* restriction) {
+#ifdef ANDROID_RENDERSCRIPT_TOOLKIT_VALIDATE
+    if (!validRestriction(LOG_TAG, sizeX, sizeY, restriction)) {
+        return;
     }
-    if (mScratchSize) {
-        delete []mScratchSize;
+    if (radius <= 0 || radius > 25) {
+        ALOGE("The radius should be between 1 and 25. %d provided.", radius);
     }
+    if (vectorSize != 1 && vectorSize != 4) {
+        ALOGE("The vectorSize should be 1 or 4. %zu provided.", vectorSize);
+    }
+#endif
+
+    BlurTask task(in, out, sizeX, sizeY, vectorSize, processor->getNumberOfThreads(), radius,
+                  restriction);
+    processor->doTask(&task);
 }
 
-void RsdCpuScriptIntrinsicBlur::populateScript(Script *s) {
-    s->mHal.info.exportedVariableCount = 2;
-}
-
-void RsdCpuScriptIntrinsicBlur::invokeFreeChildren() {
-    mAlloc.clear();
-}
-
-RsdCpuScriptImpl * rsdIntrinsic_Blur(RsdCpuReferenceImpl *ctx, const Script *s, const Element *e) {
-
-    return new RsdCpuScriptIntrinsicBlur(ctx, s, e);
-}
-
-} // namespace renderscript
-} // namespace android
+}  // namespace renderscript
+}  // namespace android
