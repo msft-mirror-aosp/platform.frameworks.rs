@@ -17,6 +17,9 @@
 #include <stdint.h>
 #include <x86intrin.h>
 
+namespace android {
+namespace renderscript {
+
 /* Unsigned extend packed 8-bit integer (in LBS) into packed 32-bit integer */
 static inline __m128i cvtepu8_epi32(__m128i x) {
 #if defined(__SSE4_1__)
@@ -1315,3 +1318,6 @@ void rsdIntrinsicBlendSub_K(void *dst, const void *src, uint32_t count8) {
         dst = (__m128i *)dst + 2;
     }
 }
+
+}  // namespace android
+}  // namespace renderscript
