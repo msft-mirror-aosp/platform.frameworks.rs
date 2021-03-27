@@ -476,6 +476,7 @@ static uint8_t * addVORR_32(uint8_t *buf, uint32_t dest_q, uint32_t src_q1, uint
 static uint8_t * addVMOV_32(uint8_t *buf, uint32_t dest_q, uint32_t imm) {
     //vmov.32 Q#1, #imm
     assert(imm == 0);
+    (void) imm; // Avoid unused parameter warnings for non-debug builds
     uint32_t op = 0xf2800050 | encodeSIMDRegs(dest_q << 1, 0, 0);
     ((uint32_t *)buf)[0] = op;
     return buf + 4;
