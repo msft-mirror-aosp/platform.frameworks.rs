@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package android.renderscript.toolkit
+package com.google.android.renderscript
 
 import android.graphics.Bitmap
 import java.lang.IllegalArgumentException
@@ -33,22 +33,21 @@ private const val externalName = "RenderScript Toolkit"
  * For ByteArrays, you need to specify the width and height of the data to be processed, as
  * well as the number of bytes per pixel. For most use cases, this will be 4.
  *
- * You should instantiate the Toolkit once and reuse it throughout your application.
- * On instantiation, the Toolkit creates a thread pool that's used for processing all the functions.
- * You can limit the number of poolThreads used by the Toolkit via the constructor. The poolThreads
- * are destroyed once the Toolkit is destroyed, after any pending work is done.
+ * The Toolkit creates a thread pool that's used for processing the functions. The threads live
+ * for the duration of the application. They can be destroyed by calling the method shutdown().
  *
  * This library is thread safe. You can call methods from different poolThreads. The functions will
  * execute sequentially.
  *
- * A native C++ version of this Toolkit is available.
+ * A native C++ version of this Toolkit is available. Check the RenderScriptToolkit.h file in the
+ * cpp directory.
  *
  * This toolkit can be used as a replacement for most RenderScript Intrinsic functions. Compared
  * to RenderScript, it's simpler to use and more than twice as fast on the CPU. However RenderScript
  * Intrinsics allow more flexibility for the type of allocation supported. In particular, this
  * toolkit does not support allocations of floats.
  */
-class Toolkit {
+object Toolkit {
     /**
      * Blends a source buffer with the destination buffer.
      *
@@ -246,7 +245,7 @@ class Toolkit {
      * the pixel value can still be modified by the add vector, or transformed to a different
      * format.
      */
-    val identityMatrix
+    val identityMatrix: FloatArray
         get() = floatArrayOf(
             1f, 0f, 0f, 0f,
             0f, 1f, 0f, 0f,
@@ -260,7 +259,7 @@ class Toolkit {
      * Use this matrix with the {@link RenderScriptToolkit::colorMatrix} method to convert an
      * image from color to greyscale.
      */
-    val greyScaleColorMatrix
+    val greyScaleColorMatrix: FloatArray
         get() = floatArrayOf(
             0.299f, 0.299f, 0.299f, 0f,
             0.587f, 0.587f, 0.587f, 0f,
@@ -278,7 +277,7 @@ class Toolkit {
      * This is a simplistic conversion. Most YUV buffers have more complicated format, not supported
      * by this method.
      */
-    val rgbToYuvMatrix
+    val rgbToYuvMatrix: FloatArray
         get() = floatArrayOf(
             0.299f, -0.14713f, 0.615f, 0f,
             0.587f, -0.28886f, -0.51499f, 0f,
@@ -296,7 +295,7 @@ class Toolkit {
      * This is a simplistic conversion. Most YUV buffers have more complicated format, not supported
      * by this method. Use {@link RenderScriptToolkit::yuvToRgb} to convert these buffers.
      */
-    val yuvToRgbMatrix
+    val yuvToRgbMatrix: FloatArray
         get() = floatArrayOf(
             1f, 1f, 1f, 0f,
             0f, -0.39465f, 2.03211f, 0f,
@@ -949,7 +948,7 @@ class Toolkit {
      * interpolated independently from the others.
      *
      * An optional range parameter can be set to restrict the operation to a rectangular subset
-     * of the output buffer. The corresponding scaled range of the input will be used.  If provided,
+     * of the output buffer. The corresponding scaled range of the input will be used. If provided,
      * the range must be wholly contained with the dimensions described by outputSizeX and
      * outputSizeY.
      *
@@ -1011,11 +1010,11 @@ class Toolkit {
      * currently supported.
      *
      * An optional range parameter can be set to restrict the operation to a rectangular subset
-     * of the output buffer. The corresponding scaled range of the input will be used.  If provided,
+     * of the output buffer. The corresponding scaled range of the input will be used. If provided,
      * the range must be wholly contained with the dimensions described by outputSizeX and
      * outputSizeY.
      *
-     * @param inputBitmap  The Bitmap to be resized.
+     * @param inputBitmap The Bitmap to be resized.
      * @param outputSizeX The width of the output buffer, as a number of 1-4 byte elements.
      * @param outputSizeY The height of the output buffer, as a number of 1-4 byte elements.
      * @param restriction When not null, restricts the operation to a 2D range of pixels.
@@ -1088,10 +1087,22 @@ class Toolkit {
         return outputBitmap
     }
 
-    companion object {
-        init {
-            System.loadLibrary("renderscript-toolkit")
-        }
+    init {
+        System.loadLibrary("renderscript-toolkit")
+        nativeHandle = createNative()
+    }
+
+    /**
+     * Shutdown the thread pool.
+     *
+     * Waits for the threads to complete their work and destroys them.
+     *
+     * An application should call this method only if it is sure that it won't call the
+     * toolkit again, as it is irreversible.
+     */
+    fun shutdown() {
+        destroyNative(nativeHandle)
+        nativeHandle = 0
     }
 
     private var nativeHandle: Long = 0
@@ -1298,14 +1309,6 @@ class Toolkit {
         outputBitmap: Bitmap,
         value: Int
     )
-
-    fun finalize() {
-        destroyNative(nativeHandle)
-    }
-
-    init {
-        nativeHandle = createNative()
-    }
 }
 
 /**
@@ -1468,7 +1471,7 @@ class Rgba3dArray(val values: ByteArray, val sizeX: Int, val sizeY: Int, val siz
     }
 }
 
-private fun validateBitmap(
+internal fun validateBitmap(
     function: String,
     inputBitmap: Bitmap,
     alphaAllowed: Boolean = true
@@ -1494,10 +1497,10 @@ private fun validateBitmap(
     }
 }
 
-private fun createCompatibleBitmap(inputBitmap: Bitmap) =
+internal fun createCompatibleBitmap(inputBitmap: Bitmap) =
     Bitmap.createBitmap(inputBitmap.width, inputBitmap.height, inputBitmap.config)
 
-private fun validateHistogramDotCoefficients(
+internal fun validateHistogramDotCoefficients(
     coefficients: FloatArray?,
     vectorSize: Int
 ) {
@@ -1519,11 +1522,16 @@ private fun validateHistogramDotCoefficients(
     }
 }
 
-private fun validateRestriction(tag: String, bitmap: Bitmap, restriction: Range2d? = null) {
+internal fun validateRestriction(tag: String, bitmap: Bitmap, restriction: Range2d? = null) {
     validateRestriction(tag, bitmap.width, bitmap.height, restriction)
 }
 
-private fun validateRestriction(tag: String, sizeX: Int, sizeY: Int, restriction: Range2d? = null) {
+internal fun validateRestriction(
+    tag: String,
+    sizeX: Int,
+    sizeY: Int,
+    restriction: Range2d? = null
+) {
     if (restriction == null) return
     require(restriction.startX < sizeX && restriction.endX <= sizeX) {
         "$externalName $tag. sizeX should be greater than restriction.startX and greater " +
@@ -1545,7 +1553,7 @@ private fun validateRestriction(tag: String, sizeX: Int, sizeY: Int, restriction
     }
 }
 
-private fun vectorSize(bitmap: Bitmap): Int {
+internal fun vectorSize(bitmap: Bitmap): Int {
     return when (bitmap.config) {
         Bitmap.Config.ARGB_8888 -> 4
         Bitmap.Config.ALPHA_8 -> 1
@@ -1555,4 +1563,4 @@ private fun vectorSize(bitmap: Bitmap): Int {
     }
 }
 
-private fun paddedSize(vectorSize: Int) = if (vectorSize == 3) 4 else vectorSize
+internal fun paddedSize(vectorSize: Int) = if (vectorSize == 3) 4 else vectorSize
