@@ -306,7 +306,9 @@ cc_library_shared {
     name: "libRS",
     defaults: ["rs_defaults"],
     native_bridge_supported: true,
-    llndk_stubs: "libRS.llndk",
+    llndk: {
+        symbol_file: "libRS.map",
+    },
     srcs: [
         "rsApiStubs.cpp",
         "rsHidlAdaptation.cpp",
@@ -340,11 +342,6 @@ cc_library_shared {
     static_libs: ["libRSDispatch"],
 
     version_script: "libRS.map",
-}
-
-llndk_library {
-    name: "libRS.llndk",
-    symbol_file: "libRS.map",
 }
 
 cc_library_shared {
