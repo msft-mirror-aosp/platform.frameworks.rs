@@ -6,6 +6,9 @@ cc_defaults {
             enabled: false,
         },
     },
+    cflags: [
+        "-Wno-deprecated-declarations",
+    ],
 }
 
 // Generate custom headers
