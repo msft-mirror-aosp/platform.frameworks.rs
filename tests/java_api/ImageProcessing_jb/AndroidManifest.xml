@@ -8,15 +8,13 @@
                  android:hardwareAccelerated="true"
                  android:theme="@android:style/Theme.Holo.Light">
         <uses-library android:name="android.test.runner" />
-        <activity android:name="ImageProcessingActivityJB"
-                  android:exported="true">
+        <activity android:name="ImageProcessingActivityJB">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
             </intent-filter>
         </activity>
 
-        <activity class=".IPControlsJB" android:name="IPControlsJB"
-                  android:exported="true">
+        <activity class=".IPControlsJB" android:name="IPControlsJB">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

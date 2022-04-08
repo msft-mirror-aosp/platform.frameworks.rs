@@ -2,8 +2,6 @@ LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
 LOCAL_MODULE := CppDebugWaitAttach
-LOCAL_LICENSE_KINDS := SPDX-license-identifier-Apache-2.0
-LOCAL_LICENSE_CONDITIONS := notice
 
 LOCAL_SRC_FILES := \
 	WaitAttach.cpp \
@@ -15,8 +13,6 @@ include $(BUILD_EXECUTABLE)
 include $(CLEAR_VARS)
 
 LOCAL_MODULE := CppNoDebugWaitAttach
-LOCAL_LICENSE_KINDS := SPDX-license-identifier-Apache-2.0
-LOCAL_LICENSE_CONDITIONS := notice
 
 LOCAL_SRC_FILES := \
 	WaitAttach.cpp \

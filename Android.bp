@@ -1,7 +1,3 @@
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
 cc_library_headers {
     name: "rs-headers",
     export_include_dirs: ["."],
@@ -14,7 +10,6 @@ cc_defaults {
         "-Werror",
         "-Wall",
         "-Wextra",
-        "-Wno-deprecated-declarations",
         "-Wno-unused-parameter",
         "-Wno-unused-variable",
     ],
@@ -306,9 +301,6 @@ cc_library_shared {
     name: "libRS",
     defaults: ["rs_defaults"],
     native_bridge_supported: true,
-    llndk: {
-        symbol_file: "libRS.map",
-    },
     srcs: [
         "rsApiStubs.cpp",
         "rsHidlAdaptation.cpp",
@@ -342,6 +334,11 @@ cc_library_shared {
     static_libs: ["libRSDispatch"],
 
     version_script: "libRS.map",
+}
+
+llndk_library {
+    name: "libRS",
+    symbol_file: "libRS.map",
 }
 
 cc_library_shared {

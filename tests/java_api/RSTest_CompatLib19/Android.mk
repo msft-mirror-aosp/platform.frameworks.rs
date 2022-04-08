@@ -21,8 +21,6 @@ LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
 LOCAL_PACKAGE_NAME := RSTest_Compat19
-LOCAL_LICENSE_KINDS := SPDX-license-identifier-Apache-2.0
-LOCAL_LICENSE_CONDITIONS := notice
 LOCAL_MODULE_TAGS := tests
 
 LOCAL_STATIC_JAVA_LIBRARIES := \
@@ -113,3 +111,4 @@ LOCAL_SRC_FILES :=\
 include $(BUILD_PACKAGE)
 
 my_rs_unit_tests_path :=
+

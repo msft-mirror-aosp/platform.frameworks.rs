@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2008 The Android Open Source Project
+# Copyright (C) 2015 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,11 +17,18 @@
 LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
+LOCAL_STATIC_JAVA_LIBRARIES := androidx.test.rules
+LOCAL_JAVA_LIBRARIES := android.test.runner.stubs android.test.base.stubs
+
 LOCAL_MODULE_TAGS := tests
+LOCAL_COMPATIBILITY_SUITE += device-tests
 
-LOCAL_SRC_FILES := $(call all-java-files-under, src) $(call all-renderscript-files-under, src)
+LOCAL_SRC_FILES := $(call all-java-files-under, src) \
+		   $(call all-renderscript-files-under, src)
 
-LOCAL_PACKAGE_NAME := RSTest_v11
-LOCAL_SDK_VERSION := 11
+LOCAL_PACKAGE_NAME := RsBlasBenchmark
+LOCAL_SDK_VERSION := current
+LOCAL_JNI_SHARED_LIBRARIES := libgemmdata
 
 include $(BUILD_PACKAGE)
+include $(LOCAL_PATH)/libsgemm/Android.mk

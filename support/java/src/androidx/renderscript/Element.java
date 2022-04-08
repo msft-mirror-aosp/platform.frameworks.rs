@@ -57,12 +57,7 @@ import android.util.Log;
  * <a href="{@docRoot}guide/topics/renderscript/index.html">RenderScript</a>
  * developer guide.</p>
  * </div>
- *
- * @deprecated Renderscript has been deprecated in API level 31. Please refer to the <a
- * href="https://developer.android.com/guide/topics/renderscript/migration-guide">migration
- * guide</a> for the proposed alternatives.
  **/
-@Deprecated
 public class Element extends BaseObj {
     int mSize;
     Element[] mElements;
@@ -760,7 +755,7 @@ public class Element extends BaseObj {
     }
 
     /*
-     * Get an identical placeholder Element for Compat Context
+     * Get an identical dummy Element for Compat Context
      *
      */
     public long getDummyElement(RenderScript mRS) {
