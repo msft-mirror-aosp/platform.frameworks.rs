@@ -18,6 +18,11 @@ cc_defaults {
         "-Wno-unused-parameter",
         "-Wno-unused-variable",
     ],
+    arch: {
+        riscv64: {
+            enabled: false,
+        },
+    },
 }
 
 cc_library_shared {
@@ -370,4 +375,5 @@ subdirs = [
     "cpu_ref",
     "script_api",
     "support",
+    "toolkit",
 ]
