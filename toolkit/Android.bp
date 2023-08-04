@@ -123,13 +123,4 @@ cc_library_shared {
         "-Wno-unused-parameter",
         "-Wno-unused-variable",
     ],
-
-    // TODO: Is this needed?
-    product_variables: {
-        pdk: {
-            // Not building RenderScript modules in PDK builds, as libmediandk
-            // is not available in PDK.
-            enabled: false,
-        },
-    },
 }
