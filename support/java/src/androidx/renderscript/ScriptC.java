@@ -90,7 +90,24 @@ public class ScriptC extends Script {
         setID(id);
     }
 
+    private static void throwExceptionIfSDKTooHigh(RenderScript rs) {
+        String message =
+                "ScriptC scripts are not supported when targeting an API Level > 34. Please refer "
+                    + "to https://developer.android.com/guide/topics/renderscript/migration-guide "
+                    + "for proposed alternatives.";
+        Log.w(TAG, message);
+        // Inlining of the Build.VERSION_CODES.UPSIDE_DOWN_CAKE constant because it is not available
+        // when building with older SDKs.
+        // https://developer.android.com/reference/android/os/Build.VERSION_CODES#UPSIDE_DOWN_CAKE
+        final int maxSupportedTargetSDKVersion = 34;
+        int targetSdkVersion = rs.getApplicationContext().getApplicationInfo().targetSdkVersion;
+        if (targetSdkVersion > maxSupportedTargetSDKVersion) {
+            throw new UnsupportedOperationException(message);
+        }
+    }
+
     private static synchronized long internalCreate(RenderScript rs, Resources resources, int resourceID) {
+        throwExceptionIfSDKTooHigh(rs);
         byte[] pgm;
         int pgmLength;
         InputStream is = resources.openRawResource(resourceID);
@@ -129,6 +146,7 @@ public class ScriptC extends Script {
 
     private static synchronized long internalStringCreate(RenderScript rs, String resName, byte[] bitcode) {
         //        Log.v(TAG, "Create script for resource = " + resName);
+        throwExceptionIfSDKTooHigh(rs);
         String cachePath = rs.getApplicationContext().getCacheDir().toString();
         return rs.nScriptCCreate(resName, cachePath, bitcode, bitcode.length);
     }
