@@ -34,6 +34,13 @@ filegroup {
 }
 
 filegroup {
+    name: "RSUnitTests_rscript_hdrs",
+    srcs: [
+        "src/**/*.rsh",
+    ],
+}
+
+filegroup {
     name: "RSUnitTests_java_gui",
     srcs: [
         "gui/**/*.java",
