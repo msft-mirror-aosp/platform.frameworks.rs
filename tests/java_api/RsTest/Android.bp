@@ -41,6 +41,7 @@ genrule {
     name: "RSTest-rscript",
     srcs: [
         ":RSUnitTests_rscript_srcs",
+        ":RSUnitTests_rscript_hdrs",
         ":rs_script_api",
         ":rs_clang_headers",
     ],
