@@ -36,6 +36,7 @@ genrule {
     name: "ScriptGroupTest-rscript",
     srcs: [
         "src/**/*.rscript",
+        "src/**/*.rsh",
         ":rs_script_api",
         ":rs_clang_headers",
     ],
