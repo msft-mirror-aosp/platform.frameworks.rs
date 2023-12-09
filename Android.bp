@@ -243,13 +243,17 @@ cc_library_shared {
 
     static_libs: ["libarect"],
 
-    // These runtime modules, including libcompiler_rt.so, are required for
-    // RenderScript.
+    // These runtime modules are required for RenderScript.
     required: [
         "libclcore.bc",
         "libclcore_debug.bc",
         "libclcore_debug_g.bc",
         "libclcore_g.bc",
+    ],
+
+    // Some runtime modules, such as libcompiler_rt, are also
+    // required from non-system variant.
+    runtime_libs: [
         "libcompiler_rt",
     ],
 
