@@ -7,7 +7,7 @@
     <application android:label="Image Processing"
                  android:hardwareAccelerated="true">
         <uses-library android:name="android.test.runner" />
-        <activity android:name="ImageProcessingActivity">
+        <activity android:name="ImageProcessingActivity" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
