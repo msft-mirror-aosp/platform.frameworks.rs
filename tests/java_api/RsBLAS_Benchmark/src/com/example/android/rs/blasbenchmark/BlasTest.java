@@ -20,8 +20,9 @@ package com.example.android.rs.blasbenchmark;
 import android.app.Activity;
 import android.os.Bundle;
 import android.test.ActivityInstrumentationTestCase2;
-import android.test.suitebuilder.annotation.MediumTest;
 import android.util.Log;
+
+import androidx.test.filters.MediumTest;
 
 import com.example.android.rs.blasbenchmark.BlasTestList.TestName;
 
