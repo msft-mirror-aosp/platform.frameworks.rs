@@ -111,10 +111,10 @@ cc_defaults {
     arch: {
         arm: {
             cflags: [
+                "-DARCH_ARM_HAVE_NEON",
                 "-DARCH_ARM_HAVE_VFP",
                 "-DARCH_ARM_USE_INTRINSICS",
             ],
-            asflags: ["-mfpu=neon"],
             srcs: [
                 "cpu_ref/rsCpuIntrinsics_neon_3DLUT.S",
                 "cpu_ref/rsCpuIntrinsics_neon_Blend.S",
@@ -124,10 +124,6 @@ cc_defaults {
                 "cpu_ref/rsCpuIntrinsics_neon_Resize.S",
                 "cpu_ref/rsCpuIntrinsics_neon_YuvToRGB.S",
             ],
-
-            neon: {
-                cflags: ["-DARCH_ARM_HAVE_NEON"]
-            },
         },
 
         arm64: {
