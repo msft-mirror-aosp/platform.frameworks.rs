@@ -258,17 +258,14 @@ cc_library_shared {
     ],
 
     arch: {
+        arm: {
+            required: ["libclcore_neon.bc"],
+        },
         x86: {
             required: ["libclcore_x86.bc"],
         },
         x86_64: {
             required: ["libclcore_x86.bc"],
-        },
-
-        arm: {
-            neon: {
-                required: ["libclcore_neon.bc"],
-            },
         },
     },
 
