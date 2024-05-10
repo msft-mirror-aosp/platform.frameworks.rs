@@ -64,6 +64,7 @@ cc_library_shared {
 
         arm: {
             cflags: [
+                "-DARCH_ARM_HAVE_NEON",
                 "-DARCH_ARM_HAVE_VFP",
                 "-DARCH_ARM_USE_INTRINSICS",
             ],
@@ -77,14 +78,6 @@ cc_library_shared {
                 "Resize_neon.S",
                 "YuvToRgb_neon.S",
             ],
-
-            asflags: ["-mfpu=neon"],
-
-            neon: {
-                cflags: [
-                    "-DARCH_ARM_HAVE_NEON",
-                ],
-            },
         },
 
         x86: {
@@ -123,13 +116,4 @@ cc_library_shared {
         "-Wno-unused-parameter",
         "-Wno-unused-variable",
     ],
-
-    // TODO: Is this needed?
-    product_variables: {
-        pdk: {
-            // Not building RenderScript modules in PDK builds, as libmediandk
-            // is not available in PDK.
-            enabled: false,
-        },
-    },
 }

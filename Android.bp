@@ -79,12 +79,6 @@ cc_library_shared {
         "libnativebase_headers",
     ],
 
-    product_variables: {
-        pdk: {
-            enabled: false,
-        },
-    },
-
     // Bug: http://b/77445194 - Disable x86 asan where rsdRuntimeStubs.cpp has
     // undefined reference to half-conversion routines (__gnu_h2f_ieee,
     // __gnu_f2h_ieee).
@@ -249,37 +243,35 @@ cc_library_shared {
 
     static_libs: ["libarect"],
 
-    // These runtime modules, including libcompiler_rt.so, are required for
-    // RenderScript.
+    // These runtime modules are required for RenderScript.
     required: [
         "libclcore.bc",
         "libclcore_debug.bc",
         "libclcore_debug_g.bc",
         "libclcore_g.bc",
+    ],
+
+    // Some runtime modules, such as libcompiler_rt, are also
+    // required from non-system variant.
+    runtime_libs: [
         "libcompiler_rt",
     ],
 
     arch: {
+        arm: {
+            required: ["libclcore_neon.bc"],
+        },
         x86: {
             required: ["libclcore_x86.bc"],
         },
         x86_64: {
             required: ["libclcore_x86.bc"],
         },
-
-        arm: {
-            neon: {
-                required: ["libclcore_neon.bc"],
-            },
-        },
     },
 
     product_variables: {
         override_rs_driver: {
             cflags: ["-DOVERRIDE_RS_DRIVER=%s"],
-        },
-        pdk: {
-            enabled: false,
         },
     },
 
@@ -338,12 +330,6 @@ cc_library_shared {
         "libcutils",
     ],
 
-    product_variables: {
-        pdk: {
-            enabled: false,
-        },
-    },
-
     static_libs: ["libRSDispatch"],
 
     version_script: "libRS.map",
@@ -358,10 +344,115 @@ cc_library_shared {
         "libandroid_runtime",
         "liblog",
     ],
+}
 
-    product_variables: {
-        pdk: {
+prebuilt_renderscript_bitcode {
+    name: "libclcore.bc",
+    arch: {
+        arm: {
+            src: "driver/runtime/prebuilts/arm/lib/libclcore.bc",
+        },
+        arm64: {
+            src: "driver/runtime/prebuilts/arm/lib64/libclcore.bc",
+        },
+        x86: {
+            src: "driver/runtime/prebuilts/x86/lib/libclcore.bc",
+        },
+        x86_64: {
+            src: "driver/runtime/prebuilts/x86/lib64/libclcore.bc",
+        },
+    },
+}
+
+prebuilt_renderscript_bitcode {
+    name: "libclcore_debug.bc",
+    arch: {
+        arm: {
+            src: "driver/runtime/prebuilts/arm/lib/libclcore_debug.bc",
+        },
+        arm64: {
+            src: "driver/runtime/prebuilts/arm/lib64/libclcore_debug.bc",
+        },
+        x86: {
+            src: "driver/runtime/prebuilts/x86/lib/libclcore_debug.bc",
+        },
+        x86_64: {
+            src: "driver/runtime/prebuilts/x86/lib64/libclcore_debug.bc",
+        },
+    },
+}
+
+prebuilt_renderscript_bitcode {
+    name: "libclcore_x86.bc",
+    arch: {
+        arm: {
             enabled: false,
+        },
+        arm64: {
+            enabled: false,
+        },
+        x86: {
+            src: "driver/runtime/prebuilts/x86/lib/libclcore_x86.bc",
+        },
+        x86_64: {
+            src: "driver/runtime/prebuilts/x86/lib64/libclcore_x86.bc",
+        },
+    },
+}
+
+prebuilt_renderscript_bitcode {
+    name: "libclcore_neon.bc",
+    arch: {
+        arm: {
+            src: "driver/runtime/prebuilts/arm/lib/libclcore_neon.bc",
+        },
+        arm64: {
+            // These are only 32-bit libraries.
+            enabled: false,
+        },
+        x86: {
+            // Using the ARM version is fine for native_bridge.
+            src: "driver/runtime/prebuilts/arm/lib/libclcore_neon.bc",
+        },
+        x86_64: {
+            // These are only 32-bit libraries.
+            enabled: false,
+        },
+    },
+}
+
+prebuilt_renderscript_bitcode {
+    name: "libclcore_g.bc",
+    arch: {
+        arm: {
+            src: "driver/runtime/prebuilts/arm/lib/libclcore_g.bc",
+        },
+        arm64: {
+            src: "driver/runtime/prebuilts/arm/lib64/libclcore_g.bc",
+        },
+        x86: {
+            src: "driver/runtime/prebuilts/x86/lib/libclcore_g.bc",
+        },
+        x86_64: {
+            src: "driver/runtime/prebuilts/x86/lib64/libclcore_g.bc",
+        },
+    },
+}
+
+prebuilt_renderscript_bitcode {
+    name: "libclcore_debug_g.bc",
+    arch: {
+        arm: {
+            src: "driver/runtime/prebuilts/arm/lib/libclcore_debug_g.bc",
+        },
+        arm64: {
+            src: "driver/runtime/prebuilts/arm/lib64/libclcore_debug_g.bc",
+        },
+        x86: {
+            src: "driver/runtime/prebuilts/x86/lib/libclcore_debug_g.bc",
+        },
+        x86_64: {
+            src: "driver/runtime/prebuilts/x86/lib64/libclcore_debug_g.bc",
         },
     },
 }
