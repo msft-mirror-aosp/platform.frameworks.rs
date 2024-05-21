@@ -20,10 +20,7 @@ cc_library_shared {
     defaults: [],
     vendor_available: false,
     native_bridge_supported: false,
-    vndk: {
-        enabled: false,
-        support_system_process: false,
-    },
+    double_loadable: true,
 
     srcs: [
         "Blend.cpp",
