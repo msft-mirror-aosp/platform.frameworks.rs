@@ -149,7 +149,10 @@ void printFuncDecls(FILE *f, const char *prefix, int addContext, int externC) {
             fprintf(f, "extern \"C\" ");
         }
         printFuncDecl(f, &apis[ct], prefix, addContext, 0);
-        fprintf(f, " __DEPRECATED_IN(31);\n");
+        fprintf(f,
+                " __DEPRECATED_IN(31, \"RenderScript is deprecated. See "
+                "https://developer.android.com/guide/topics/renderscript/"
+                "migrate\");\n");
     }
     fprintf(f, "\n\n");
 }
