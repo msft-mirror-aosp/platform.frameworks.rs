@@ -29,10 +29,7 @@ cc_library_shared {
     name: "libRSDriver",
     vendor_available: true,
     native_bridge_supported: true,
-    vndk: {
-        enabled: true,
-        support_system_process: true,
-    },
+    double_loadable: true,
     defaults: ["rs_defaults"],
 
     srcs: [
@@ -168,10 +165,7 @@ cc_library_shared {
     name: "libRS_internal",
     vendor_available: true,
     native_bridge_supported: true,
-    vndk: {
-        enabled: true,
-        support_system_process: true,
-    },
+    double_loadable: true,
     defaults: ["rs_defaults"],
 
     srcs: [
@@ -258,17 +252,14 @@ cc_library_shared {
     ],
 
     arch: {
+        arm: {
+            required: ["libclcore_neon.bc"],
+        },
         x86: {
             required: ["libclcore_x86.bc"],
         },
         x86_64: {
             required: ["libclcore_x86.bc"],
-        },
-
-        arm: {
-            neon: {
-                required: ["libclcore_neon.bc"],
-            },
         },
     },
 
