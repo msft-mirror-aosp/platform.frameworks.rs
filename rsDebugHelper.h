@@ -38,7 +38,7 @@ public:
 
     void dump() {
 #if !defined(RS_VENDOR_LIB) && !defined(RS_COMPATIBILITY_LIB)
-        ALOGV("%s", mStack.toString().string());
+        ALOGV("%s", mStack.toString().c_str());
         //mStack.dump();
 #endif
     }

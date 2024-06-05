@@ -25,7 +25,10 @@ android_test {
         "android.test.runner.stubs",
         "android.test.base.stubs",
     ],
-    static_libs: ["junit"],
+    static_libs: [
+        "junit",
+        "androidx.test.rules",
+    ],
     srcs: [
         "src/**/*.java",
         ":ImageProcessing-rscript{ImageProcessing.srcjar}",
@@ -41,6 +44,7 @@ genrule {
     name: "ImageProcessing-rscript",
     srcs: [
         "src/**/*.rscript",
+        "src/**/*.rsh",
         ":rs_script_api",
         ":rs_clang_headers",
     ],
