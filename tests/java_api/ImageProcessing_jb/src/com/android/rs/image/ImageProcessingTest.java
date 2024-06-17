@@ -21,8 +21,9 @@ import android.app.Activity;
 import android.os.Bundle;
 import android.os.Environment;
 import android.test.ActivityInstrumentationTestCase2;
-import android.test.suitebuilder.annotation.MediumTest;
 import android.util.Log;
+
+import androidx.test.filters.MediumTest;
 
 import com.android.rs.imagejb.IPTestListJB.TestName;
 
