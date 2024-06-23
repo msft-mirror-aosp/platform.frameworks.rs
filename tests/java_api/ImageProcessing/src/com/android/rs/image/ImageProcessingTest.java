@@ -16,14 +16,14 @@
 
 package com.android.rs.image;
 
-import com.android.rs.image.ImageProcessingTestRunner;
 
 import android.os.Bundle;
-import com.android.rs.image.ImageProcessingActivity.TestName;
-
 import android.test.ActivityInstrumentationTestCase2;
-import android.test.suitebuilder.annotation.LargeTest;
 import android.util.Log;
+
+import androidx.test.filters.LargeTest;
+
+import com.android.rs.image.ImageProcessingActivity.TestName;
 
 /**
  * ImageProcessing benchmark test.
