@@ -32,7 +32,6 @@
 struct dispatchTable;
 
 namespace android {
-class Surface;
 
 namespace RSC {
 
@@ -650,22 +649,6 @@ public:
      * is only valid if USAGE_IO_INPUT is set on the Allocation.
      */
     void ioGetInput();
-
-#ifndef RS_COMPATIBILITY_LIB
-    /**
-     * Returns the handle to a raw buffer that is being managed by the screen
-     * compositor. This operation is only valid for Allocations with USAGE_IO_INPUT.
-     * @return Surface associated with allocation
-     */
-    sp<Surface> getSurface();
-
-    /**
-     * Associate a Surface with this Allocation. This
-     * operation is only valid for Allocations with USAGE_IO_OUTPUT.
-     * @param[in] s Surface to associate with allocation
-     */
-    void setSurface(const sp<Surface>& s);
-#endif
 
     /**
      * Generate a mipmap chain. This is only valid if the Type of the Allocation
