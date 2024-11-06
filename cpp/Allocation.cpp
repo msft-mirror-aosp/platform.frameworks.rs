@@ -19,7 +19,6 @@
 
 using android::RSC::Allocation;
 using android::RSC::sp;
-using android::Surface;
 
 void * Allocation::getIDSafe() const {
     return getID();
@@ -492,29 +491,3 @@ void Allocation::ioGetInput() {
     tryDispatch(mRS, RS::dispatch->AllocationIoReceive(mRS->getContext(), getID()));
 #endif
 }
-
-#ifndef RS_COMPATIBILITY_LIB
-#include <gui/Surface.h>
-
-sp<Surface> Allocation::getSurface() {
-    if ((mUsage & RS_ALLOCATION_USAGE_IO_INPUT) == 0) {
-        mRS->throwError(RS_ERROR_INVALID_PARAMETER, "Can only get Surface if IO_INPUT usage specified.");
-        return nullptr;
-    }
-    ANativeWindow *anw = (ANativeWindow *)RS::dispatch->AllocationGetSurface(mRS->getContext(),
-                                                                             getID());
-    sp<Surface> surface(static_cast<Surface*>(anw));
-    return surface;
-}
-
-void Allocation::setSurface(const sp<Surface>& s) {
-    if ((mUsage & RS_ALLOCATION_USAGE_IO_OUTPUT) == 0) {
-        mRS->throwError(RS_ERROR_INVALID_PARAMETER, "Can only set Surface if IO_OUTPUT usage specified.");
-        return;
-    }
-    tryDispatch(mRS, RS::dispatch->AllocationSetSurface(mRS->getContext(), getID(),
-                                                        static_cast<ANativeWindow *>(s.get())));
-}
-
-#endif
-
