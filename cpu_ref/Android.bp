@@ -107,6 +107,7 @@ cc_library_shared {
         "-Werror",
         "-Wall",
         "-Wextra",
+        "-Wno-cast-function-type-mismatch",
         "-Wno-unused-parameter",
         "-Wno-unused-variable",
     ],
