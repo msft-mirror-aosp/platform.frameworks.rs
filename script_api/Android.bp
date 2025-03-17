@@ -17,11 +17,6 @@ cc_binary_host {
         "GenerateRSFunctionsList.cpp",
     ],
 
-    cflags: [
-        "-Wall",
-        "-Werror",
-    ],
-
     sanitize: {
         never: true,
     },
