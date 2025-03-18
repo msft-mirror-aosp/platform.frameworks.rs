@@ -89,7 +89,7 @@ cc_library_shared {
     },
 
     target: {
-        native_bridge : {
+        native_bridge: {
             header_libs: [
                 "libnativewindow_headers",
                 "media_ndk_headers",

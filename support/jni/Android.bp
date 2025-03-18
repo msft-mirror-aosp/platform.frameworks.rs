@@ -20,9 +20,6 @@ cc_library_shared {
     ],
 
     cflags: [
-        "-Werror",
-        "-Wall",
-        "-Wextra",
         "-Wno-unused-parameter",
         "-DRS_COMPATIBILITY_LIB",
     ],
@@ -66,9 +63,6 @@ cc_library_shared {
     ],
 
     cflags: [
-        "-Werror",
-        "-Wall",
-        "-Wextra",
         "-Wno-unused-parameter",
         "-DRS_COMPATIBILITY_LIB",
     ],
