@@ -17,15 +17,15 @@ cc_library_static {
     ],
 
     cflags: [
-        "-Wall",
-        "-Werror",
         "-Wno-unused-parameter",
         "-DRS_COMPATIBILITY_LIB",
     ],
 
-
     sdk_version: "9",
-    shared_libs: ["libdl", "liblog"],
+    shared_libs: [
+        "libdl",
+        "liblog",
+    ],
     // Used in librsjni, which is built as NDK code => no ASan.
     sanitize: {
         never: true,
@@ -54,23 +54,17 @@ cc_defaults {
     ],
 
     cflags: [
-        "-Werror",
-        "-Wall",
-        "-Wextra",
-        "-Wno-deprecated-declarations",
         "-Wno-unused-parameter",
-        "-Wno-unused-variable",
     ],
-
     // We need to export not just rs/cpp but also rs.  This is because
     // RenderScript.h includes rsCppStructs.h, which includes rs/rsDefines.h.
     header_libs: [
         "jni_headers",
-        "rs-headers"
+        "rs-headers",
     ],
     export_header_lib_headers: [
         "jni_headers",
-        "rs-headers"
+        "rs-headers",
     ],
     export_include_dirs: ["."],
 
@@ -103,7 +97,10 @@ cc_library_static {
     name: "libRScpp_static",
     defaults: ["libRScpp-defaults"],
 
-    cflags: ["-DRS_COMPATIBILITY_LIB"],
+    cflags: [
+        "-Wno-unused-parameter",
+        "-DRS_COMPATIBILITY_LIB",
+    ],
 
     sdk_version: "9",
     whole_static_libs: ["libRSDispatch"],
